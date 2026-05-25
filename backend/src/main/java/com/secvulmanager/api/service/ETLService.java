@@ -108,6 +108,7 @@ public class ETLService {
             Path uploadedScanPath = safeScanUploadPath(runLog, file);
             Files.copy(file.getInputStream(), uploadedScanPath, StandardCopyOption.REPLACE_EXISTING);
             runLog.setSampleFilePath(uploadedScanPath.toAbsolutePath().toString());
+            runLog.setUploadedFilePath(uploadedScanPath.toAbsolutePath().toString());
             runLog = uploadRepository.save(runLog);
         } catch (Exception e) {
             runLog.setStatus(Enums.UploadStatus.FAILED);
@@ -147,12 +148,29 @@ public class ETLService {
                         CSVRecord headerRec = iterator.next();
                         headers = csvRecordToArray(headerRec);
                     }
+                    MappingEngineService.TemplateCompatibilityResult compatibility = mappingEngineService.validateTemplateCompatibility(mappings, headers, hasHeaderRow);
+                    if (!compatibility.valid()) {
+                        runLog.setStatus(Enums.UploadStatus.FAILED);
+                        runLog.setErrorSummary(compatibility.message());
+                        return uploadRepository.save(runLog);
+                    }
                     MappingEngineService.MappingPlan mappingPlan = mappingEngineService.compile(mappings, headers, hasHeaderRow);
                     String[] errorFileHeaders = headers != null ? mappingEngineService.buildErrorHeaders(headers) : null;
 
                     while (iterator.hasNext()) {
                         CSVRecord record = iterator.next();
                         String[] row = csvRecordToArray(record);
+                        if (!hasHeaderRow && totalRecords == 0 && compatibility.maxRequiredSourceColumnIndex() >= row.length) {
+                            runLog.setStatus(Enums.UploadStatus.FAILED);
+                            runLog.setErrorSummary("Uploaded file does not have enough columns for this active template. Expected source column index "
+                                    + compatibility.maxRequiredSourceColumnIndex()
+                                    + " but first data row has "
+                                    + row.length
+                                    + " column"
+                                    + (row.length == 1 ? "" : "s")
+                                    + ".");
+                            return uploadRepository.save(runLog);
+                        }
                         totalRecords++;
                         if (errorFileHeaders == null) {
                             errorFileHeaders = mappingEngineService.buildGeneratedErrorHeaders(row.length, mappingPlan);
@@ -195,6 +213,12 @@ public class ETLService {
                             startIdx = 1;
                         }
                     }
+                    MappingEngineService.TemplateCompatibilityResult compatibility = mappingEngineService.validateTemplateCompatibility(mappings, headers, hasHeaderRow);
+                    if (!compatibility.valid()) {
+                        runLog.setStatus(Enums.UploadStatus.FAILED);
+                        runLog.setErrorSummary(compatibility.message());
+                        return uploadRepository.save(runLog);
+                    }
                     MappingEngineService.MappingPlan mappingPlan = mappingEngineService.compile(mappings, headers, hasHeaderRow);
                     String[] errorFileHeaders = headers != null ? mappingEngineService.buildErrorHeaders(headers) : null;
                     for (int i = startIdx; i <= sheet.getLastRowNum(); i++) {
@@ -204,6 +228,17 @@ public class ETLService {
                         for (int j = 0; j < r.getLastCellNum(); j++) {
                             Cell cell = r.getCell(j);
                             row[j] = getCellValueAsString(cell);
+                        }
+                        if (!hasHeaderRow && totalRecords == 0 && compatibility.maxRequiredSourceColumnIndex() >= row.length) {
+                            runLog.setStatus(Enums.UploadStatus.FAILED);
+                            runLog.setErrorSummary("Uploaded file does not have enough columns for this active template. Expected source column index "
+                                    + compatibility.maxRequiredSourceColumnIndex()
+                                    + " but first data row has "
+                                    + row.length
+                                    + " column"
+                                    + (row.length == 1 ? "" : "s")
+                                    + ".");
+                            return uploadRepository.save(runLog);
                         }
                         totalRecords++;
                         if (errorFileHeaders == null) {
@@ -261,21 +296,23 @@ public class ETLService {
 
         runLog.setTotalRecords(totalRecords);
         runLog.setFailedRecords(failedRecords);
+        runLog.setSuccessfulRecords(successfulRecords);
+        runLog.setWarningRecords(0);
 
         if (successfulRecords > 0) {
-            Optional<UploadDetails> activeSnapshot = uploadRepository.findActiveSnapshotForCustomer(customerId);
-            if (activeSnapshot.isPresent()) {
-                UploadDetails oldActive = activeSnapshot.get();
-                oldActive.setActiveSnapshot(false);
-                uploadRepository.save(oldActive);
+            boolean majoritySucceeded = successfulRecords * 2 >= totalRecords;
+            if (majoritySucceeded) {
+                activateUploadSnapshot(customerId, template.getSoftware().getId(), runLog);
             }
-
-            runLog.setActiveSnapshot(true);
             if (failedRecords == 0) {
                 runLog.setStatus(Enums.UploadStatus.SUCCESS);
             } else {
                 runLog.setStatus(Enums.UploadStatus.PARTIAL_FAILURE);
-                runLog.setErrorSummary("Partially ingested " + successfulRecords + " records. " + failedRecords + " rows failed constraints.");
+                if (majoritySucceeded) {
+                    runLog.setErrorSummary("Partially ingested " + successfulRecords + " records. " + failedRecords + " rows failed constraints. This upload replaced the previous active snapshot because at least 50% of rows succeeded.");
+                } else {
+                    runLog.setErrorSummary("Partially ingested " + successfulRecords + " records. " + failedRecords + " rows failed constraints. This upload was kept historical because fewer than 50% of rows succeeded. Review the upload and activate it manually if it should replace the current active snapshot.");
+                }
             }
         } else {
             runLog.setStatus(Enums.UploadStatus.FAILED);
@@ -287,6 +324,29 @@ public class ETLService {
         }
 
         return uploadRepository.save(runLog);
+    }
+
+    public UploadDetails activateUploadSnapshot(UUID uploadId) {
+        UploadDetails runLog = uploadRepository.findById(uploadId)
+                .orElseThrow(() -> new IllegalArgumentException("Upload not found"));
+        if (runLog.getSoftware() == null) {
+            throw new IllegalArgumentException("Upload has no software reference and cannot be activated");
+        }
+        if (runLog.getSuccessfulRecords() <= 0 || runLog.getStatus() == Enums.UploadStatus.FAILED) {
+            throw new IllegalArgumentException("Only successful or partially successful uploads can be activated");
+        }
+        activateUploadSnapshot(runLog.getCustomer().getId(), runLog.getSoftware().getId(), runLog);
+        return uploadRepository.save(runLog);
+    }
+
+    private void activateUploadSnapshot(UUID customerId, UUID softwareId, UploadDetails runLog) {
+        Optional<UploadDetails> activeSnapshot = uploadRepository.findActiveSnapshotForCustomerAndSoftware(customerId, softwareId);
+        if (activeSnapshot.isPresent() && !activeSnapshot.get().getId().equals(runLog.getId())) {
+            UploadDetails oldActive = activeSnapshot.get();
+            oldActive.setActiveSnapshot(false);
+            uploadRepository.save(oldActive);
+        }
+        runLog.setActiveSnapshot(true);
     }
 
     private Path safeScanUploadPath(UploadDetails runLog, MultipartFile file) throws IOException {

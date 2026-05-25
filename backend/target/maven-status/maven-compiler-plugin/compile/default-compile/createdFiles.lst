@@ -44,6 +44,7 @@ com/secvulmanager/api/controller/SecuritySoftwareController.class
 com/secvulmanager/api/controller/CustomerTemplateController$1.class
 com/secvulmanager/api/controller/CustomerController.class
 com/secvulmanager/api/service/DestinationSchemaService.class
+com/secvulmanager/api/service/MappingEngineService$TemplateCompatibilityResult.class
 com/secvulmanager/api/service/MappingEngineService$MappingConfiguration.class
 com/secvulmanager/api/repository/AppUserRepository.class
 com/secvulmanager/api/model/Enums$UserRole.class

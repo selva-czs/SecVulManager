@@ -216,6 +216,17 @@ public class CustomerTemplateController {
         if (request.containsKey("hasHeaderRow")) {
             def.setHasHeaderRow(Boolean.parseBoolean(String.valueOf(request.get("hasHeaderRow"))));
         }
+        if (request.containsKey("enabled")) {
+            def.setEnabled(Boolean.parseBoolean(String.valueOf(request.get("enabled"))));
+        }
+        boolean replaceActiveTemplate = Boolean.parseBoolean(String.valueOf(request.getOrDefault("replaceActiveTemplate", false)));
+        String activeConflict = activeTemplateConflictMessage(def, null);
+        if (activeConflict != null && !replaceActiveTemplate) {
+            return ResponseEntity.badRequest().body(Map.of("error", activeConflict));
+        }
+        if (replaceActiveTemplate) {
+            disableConflictingActiveTemplates(def, null);
+        }
         def = templateRepository.save(def);
 
         return ResponseEntity.status(HttpStatus.CREATED).body(def);
@@ -248,6 +259,17 @@ public class CustomerTemplateController {
         }
         if (request.containsKey("hasHeaderRow")) {
             def.setHasHeaderRow(Boolean.parseBoolean(String.valueOf(request.get("hasHeaderRow"))));
+        }
+        if (request.containsKey("enabled")) {
+            def.setEnabled(Boolean.parseBoolean(String.valueOf(request.get("enabled"))));
+        }
+        boolean replaceActiveTemplate = Boolean.parseBoolean(String.valueOf(request.getOrDefault("replaceActiveTemplate", false)));
+        String activeConflict = activeTemplateConflictMessage(def, null);
+        if (activeConflict != null && !replaceActiveTemplate) {
+            return ResponseEntity.badRequest().body(Map.of("error", activeConflict));
+        }
+        if (replaceActiveTemplate) {
+            disableConflictingActiveTemplates(def, null);
         }
         return ResponseEntity.status(HttpStatus.CREATED).body(templateRepository.save(def));
     }
@@ -593,7 +615,63 @@ public class CustomerTemplateController {
             template.setArchivedBy(value ? currentUser.getUsername() : null);
         }
 
+        boolean replaceActiveTemplate = Boolean.parseBoolean(String.valueOf(request.getOrDefault("replaceActiveTemplate", false)));
+        String activeConflict = activeTemplateConflictMessage(template, template.getId());
+        if (activeConflict != null && !replaceActiveTemplate) {
+            return ResponseEntity.badRequest().body(Map.of("error", activeConflict));
+        }
+        if (replaceActiveTemplate) {
+            disableConflictingActiveTemplates(template, template.getId());
+        }
+
         return ResponseEntity.ok(templateRepository.save(template));
+    }
+
+    private String activeTemplateConflictMessage(CustomerTemplate candidate, UUID ignoreTemplateId) {
+        if (!candidate.isEnabled() || candidate.isArchived() || candidate.getSoftware() == null) {
+            return null;
+        }
+
+        boolean customerScoped = candidate.getCustomer() != null;
+        boolean conflict = templateRepository.findBySoftwareId(candidate.getSoftware().getId()).stream()
+                .filter(template -> ignoreTemplateId == null || !template.getId().equals(ignoreTemplateId))
+                .filter(template -> template.isEnabled() && !template.isArchived())
+                .filter(template -> {
+                    if (customerScoped) {
+                        return template.getCustomer() != null && template.getCustomer().getId().equals(candidate.getCustomer().getId());
+                    }
+                    return template.getCustomer() == null;
+                })
+                .findAny()
+                .isPresent();
+
+        if (!conflict) {
+            return null;
+        }
+
+        String scope = customerScoped ? "this customer and software" : "this software";
+        return "Only one active template is allowed for " + scope + ". Disable the current active template before enabling this one.";
+    }
+
+    private void disableConflictingActiveTemplates(CustomerTemplate candidate, UUID ignoreTemplateId) {
+        if (!candidate.isEnabled() || candidate.isArchived() || candidate.getSoftware() == null) {
+            return;
+        }
+
+        boolean customerScoped = candidate.getCustomer() != null;
+        templateRepository.findBySoftwareId(candidate.getSoftware().getId()).stream()
+                .filter(template -> ignoreTemplateId == null || !template.getId().equals(ignoreTemplateId))
+                .filter(template -> template.isEnabled() && !template.isArchived())
+                .filter(template -> {
+                    if (customerScoped) {
+                        return template.getCustomer() != null && template.getCustomer().getId().equals(candidate.getCustomer().getId());
+                    }
+                    return template.getCustomer() == null;
+                })
+                .forEach(template -> {
+                    template.setEnabled(false);
+                    templateRepository.save(template);
+                });
     }
 
     @DeleteMapping("/templates/{templateId}")

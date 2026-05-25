@@ -76,13 +76,15 @@ sequenceDiagram
   Operator->>UI: Save template
   UI->>Template: PUT /templates/{id}/mapping
   Template->>Engine: Validate mapping document
+  Template->>DB: Optionally replace active template in same software scope
   Template->>DB: Save CustomerTemplate mapping JSON
 
   Operator->>UI: Upload scan file
   UI->>API: POST /api/uploads/ingest
   API->>ETL: ingestFile()
   ETL->>FS: Store original upload
-  ETL->>Engine: Load + compile mapping once
+  ETL->>Engine: Load mapping and validate upload headers
+  ETL->>Engine: Compile mapping once
   ETL->>ETL: Stream rows and batch valid findings
   ETL->>DB: Save VulnerabilityFinding batches
   ETL->>FS: Stream failed rows if needed
@@ -104,7 +106,8 @@ Important frontend responsibilities:
 - Upload template sample files.
 - Display source columns, destination schema, mapping status, and backend preview results.
 - Upload vulnerability scan files for ingestion.
-- Show upload history, active findings, and remediation status.
+- Show active vulnerability records and upload history as separate filtered tabs.
+- Sort vendor/software choices by latest upload time so the newest upload is easiest to review.
 
 API calls should go through `frontend/src/api.js`. Components should not call `fetch` directly.
 
@@ -117,11 +120,13 @@ flowchart TD
   C --> D["Auto-map source columns"]
   D --> E["Review required fields"]
   E --> F["Configure value rules if needed"]
-  F --> G["Test sample with backend preview"]
+  F --> G["Review save summary"]
   G --> H{"Ready?"}
   H -- "Missing required fields" --> I["Save disabled draft"]
   H -- "Valid mapping" --> J["Review save summary"]
-  J --> K["Save enabled template"]
+  J --> K{"Activation choice"}
+  K -- "Make active" --> L["Save ready template and disable prior active template in same scope"]
+  K -- "Save inactive" --> M["Save ready inactive template"]
 ```
 
 Current mapper capabilities:
@@ -148,8 +153,10 @@ Current mapper capabilities:
   - `SET_NULL`
   - `SET_EMPTY`
   - `SET_CUSTOM`
-- Run backend sample preview using the real mapping engine.
-- Save a ready template or disabled draft.
+- Backend sample preview code exists for phase 2, but the current wizard allows saving without running that step.
+- Save a ready template as active or inactive.
+- Save a disabled draft.
+- When saving as active, confirm whether it replaces the existing active template in the same software scope.
 
 ## 5. Backend API Areas
 
@@ -160,7 +167,7 @@ Main REST areas:
 - `/api/software`: security software CRUD and enable/disable.
 - `/api/templates`: template list, schema, update, mapping save, preview, sample upload, sample download.
 - `/api/uploads`: vulnerability file ingestion, upload history, failed-row download, original upload download.
-- `/api/vulnerabilities`: active findings and manual endpoints.
+- `/api/vulnerabilities`: active findings with customer/software/template filters and manual endpoints.
 - `/api/vulnerabilities/remediation`: remediation workflow read/update.
 - `/api/users`: user administration and customer access.
 
@@ -180,6 +187,7 @@ Upload-specific endpoints:
 ```text
 POST /api/uploads/ingest
 GET  /api/uploads
+GET  /api/uploads?customerId=&softwareId=&templateId=&status=&activeSnapshot=
 GET  /api/uploads/{id}/error-log
 GET  /api/uploads/{id}/sample
 ```
@@ -210,13 +218,14 @@ Responsibilities:
 - Create `UploadDetails`.
 - Store the original uploaded scan file.
 - Load mapping configuration.
+- Validate the uploaded file headers against the active template before row conversion.
 - Stream supported input rows.
 - Compile mapping once per upload.
 - Process each row through `MappingEngineService`.
 - Batch valid findings into PostgreSQL.
 - Stream failed rows to a downloadable error file.
 - Update upload counts and status.
-- Mark the successful upload as the active snapshot for the customer.
+- Mark the successful upload as the active snapshot for the customer + software.
 
 `ETLService` should not contain field-level mapping business rules. It should orchestrate ingestion and performance-sensitive batching.
 
@@ -230,6 +239,7 @@ Responsibilities:
 - Validate mapping metadata.
 - Validate destination fields against backend schema.
 - Validate transform names.
+- Validate header compatibility before ingestion starts.
 - Compile `Map<String,Object>` mapping rows into a `MappingPlan`.
 - Resolve source column indexes once.
 - Store prepared conversions and field metadata in lightweight records.
@@ -281,22 +291,25 @@ flowchart TD
   A["Upload file"] --> B["Store original upload"]
   B --> C["Load template mapping JSON"]
   C --> D["Validate mapping document"]
-  D --> E["Compile MappingPlan once"]
-  E --> F["Open parser stream"]
-  F --> G["Read one row"]
-  G --> H["Apply prepared mapping plan"]
-  H --> I{"Row valid?"}
-  I -- "Yes" --> J["Add finding to current DB batch"]
-  J --> K{"Batch full?"}
-  K -- "Yes" --> L["saveAll + flush + clear"]
-  K -- "No" --> M["Read next row"]
-  L --> M
-  I -- "No" --> N["Write failed row immediately"]
-  N --> M
-  M --> G
-  G --> O["End of file"]
-  O --> P["Flush final batch"]
-  P --> Q["Update UploadDetails"]
+  D --> E["Read header or first data row"]
+  E --> F{"Compatible with active template?"}
+  F -- "No" --> X["Mark UploadDetails FAILED before row conversion"]
+  F -- "Yes" --> G["Compile MappingPlan once"]
+  G --> H["Open parser stream"]
+  H --> I["Read one row"]
+  I --> J["Apply prepared mapping plan"]
+  J --> K{"Row valid?"}
+  K -- "Yes" --> L["Add finding to current DB batch"]
+  L --> M{"Batch full?"}
+  M -- "Yes" --> N["saveAll + flush + clear"]
+  M -- "No" --> O["Read next row"]
+  N --> O
+  K -- "No" --> P["Write failed row immediately"]
+  P --> O
+  O --> I
+  I --> Q["End of file"]
+  Q --> R["Flush final batch"]
+  R --> S["Update UploadDetails"]
 ```
 
 Performance optimizations already applied:
@@ -305,6 +318,7 @@ Performance optimizations already applied:
 - The system no longer uses `parser.getRecords()` for ingestion or sample extraction.
 - Mapping configuration is parsed and compiled once.
 - Header-to-index lookup is done once.
+- Header compatibility is checked before row conversion, so wrong vendor files fail early instead of producing row-by-row conversion failures.
 - Each row uses direct `String[]` source access.
 - Valid findings are persisted in batches.
 - Hibernate persistence context is flushed and cleared after each batch.
@@ -363,8 +377,11 @@ erDiagram
   APP_USER ||--o{ USER_CUSTOMER_ACCESS : has
   CUSTOMER ||--o{ USER_CUSTOMER_ACCESS : grants
   CUSTOMER ||--o{ CUSTOMER_TEMPLATE : owns
+  CUSTOMER ||--o{ CUSTOMER_SOFTWARE_ACCESS : assigned
+  SECURITY_SOFTWARE ||--o{ CUSTOMER_SOFTWARE_ACCESS : allowed
   SECURITY_SOFTWARE ||--o{ CUSTOMER_TEMPLATE : provides
   CUSTOMER ||--o{ UPLOAD_DETAILS : has
+  SECURITY_SOFTWARE ||--o{ UPLOAD_DETAILS : source
   CUSTOMER_TEMPLATE ||--o{ UPLOAD_DETAILS : used_by
   UPLOAD_DETAILS ||--o{ VULNERABILITY_FINDING : creates
   CUSTOMER ||--o{ VULNERABILITY_FINDING : owns
@@ -388,6 +405,8 @@ erDiagram
     uuid id
     string softwareName
     boolean enabled
+    long assignedCustomerCount
+    long enabledAssignedCustomerCount
   }
 
   CUSTOMER_TEMPLATE {
@@ -402,18 +421,30 @@ erDiagram
     text sampleFilePath
   }
 
+  CUSTOMER_SOFTWARE_ACCESS {
+    uuid id
+    uuid customer_id
+    uuid software_id
+    boolean enabled
+  }
+
   UPLOAD_DETAILS {
     uuid id
     uuid customer_id
+    uuid software_id
     uuid template_id
     string fileName
     string uploadedBy
     timestamp uploadedAt
     string status
     int totalRecords
+    int successfulRecords
     int failedRecords
+    int warningRecords
     boolean isActiveSnapshot
+    text uploadedFilePath
     text sampleFilePath
+    text processingLogPath
     text errorLogPath
     text errorSummary
   }
@@ -433,11 +464,13 @@ erDiagram
 
 ### Active Snapshot Logic
 
-Each successful or partially successful upload can become the active snapshot for a customer.
+Each successful or partially successful upload can become the active snapshot for a customer + software pair.
+
+This lets one customer keep independent current vulnerability sets for multiple vendors. For example, the latest Nessus upload and latest Kaseya upload can both be active for the same customer.
 
 ```mermaid
 flowchart TD
-  A["New upload has at least one valid finding"] --> B["Find current active UploadDetails for customer"]
+  A["New upload has at least one valid finding"] --> B["Find current active UploadDetails for customer + software"]
   B --> C{"Existing active snapshot?"}
   C -- "Yes" --> D["Set old upload isActiveSnapshot=false"]
   C -- "No" --> E["Continue"]
@@ -452,9 +485,24 @@ Current active findings query:
 ```text
 VulnerabilityFinding where customer.id = :customerId
 and upload.isActiveSnapshot = true
+and optional upload.software.id = :softwareId
+and optional upload.template.id = :templateId
 ```
 
 This keeps historical uploads available while making the current finding set easy to query.
+
+Upload history remains complete and is sorted by `uploadedAt DESC`. It can be filtered by customer, software, template, upload status, and active/historical snapshot state.
+
+### Template Activation Rule
+
+Only one active template is allowed per software scope:
+
+- Global scope: one active global template per software.
+- Customer scope: one active customer template per customer + software.
+
+When saving a ready template, the UI asks whether to make it active or save it inactive. New inactive templates are created with `is_enabled=false` immediately. If the user chooses active and another active template exists in the same scope, the existing active template is disabled only when the save request explicitly includes the replacement flag. Draft templates are saved inactive and do not replace active templates.
+
+`SecuritySoftware.assignedCustomerCount` and `SecuritySoftware.enabledAssignedCustomerCount` are transient API summary fields calculated from `customer_software_access`; they are not physical `security_software` columns.
 
 ## 10. Template Mapping JSON
 
@@ -497,6 +545,8 @@ Important semantics:
 - `SET_NULL`: should be treated as a failure/empty output policy, not a normal transform.
 - `status=ready`: ingestion can use the template.
 - `status=draft`: template is saved but disabled for ingestion.
+- Header-based ready templates require uploaded files to contain all mapped source columns before row conversion starts.
+- No-header templates validate that the first data row has enough source columns before row conversion starts.
 
 ## 11. Upload Status And Failed Rows
 
@@ -514,6 +564,27 @@ Failed row handling:
 - Delimited uploads produce CSV failed-row files.
 - Spreadsheet uploads produce XLSX failed-row files.
 - `UploadDetails.errorLogPath` stores the downloadable failed-row file path.
+- If template/header compatibility fails, no failed-row file is created because row conversion never starts; the reason is stored in `UploadDetails.errorSummary`.
+
+Upload statistics:
+
+- `totalRecords`: data rows read from the file.
+- `successfulRecords`: normalized findings inserted.
+- `failedRecords`: rows written to the failed-row file.
+- `warningRecords`: reserved for non-blocking row warnings.
+
+Active replacement rules:
+
+- `FAILED` uploads never replace the active snapshot.
+- `SUCCESS` uploads replace the current active snapshot for the same customer + software.
+- `PARTIAL_FAILURE` uploads replace the active snapshot only when at least 50% of rows succeeded.
+- `PARTIAL_FAILURE` uploads below 50% success stay historical by default. A user can review the upload detail page and manually mark it active if it should replace the previous active snapshot.
+- Active Vulnerabilities defaults only consider active `SUCCESS` or `PARTIAL_FAILURE` snapshots with successful rows. Failed and historical uploads never drive the default vendor/software filter.
+
+Generated-file handling:
+
+- Local files under `backend/uploads/`, `backend/scan-uploads/`, and `backend/failed-uploads/` are runtime artifacts and are ignored by git.
+- Product export files should be implemented as tracked export jobs with metadata such as export job id, requesting user, filter/list scope, timestamp, status, and downloadable file path. They should not be committed as repository source files.
 
 ## 12. Developer Extension Guide
 
@@ -557,15 +628,17 @@ Important database considerations:
 
 - `UploadDetails` is the ingestion run table.
 - `VulnerabilityFinding` is append-only per upload run.
-- Active findings are selected through the active upload snapshot.
+- Active findings are selected through the active upload snapshot per customer + software.
 - Historical upload runs remain queryable.
 - Failed-row details are file-backed, not stored row-by-row in the database.
+- `upload_details.software_id` is stored directly for stable filtering/backtracking even if template metadata changes later.
+- `uploaded_file_path` is the original scan upload path. `sample_file_path` exists for backward compatibility with earlier builds.
 
 Useful indexes to consider as volume grows:
 
 ```sql
-CREATE INDEX IF NOT EXISTS idx_upload_details_customer_active
-ON upload_details (customer_id, is_active_snapshot);
+CREATE INDEX IF NOT EXISTS idx_upload_details_customer_software_active
+ON upload_details (customer_id, software_id, is_active_snapshot);
 
 CREATE INDEX IF NOT EXISTS idx_vulnerability_finding_customer_upload
 ON vulnerability_finding (customer_id, upload_id);
@@ -591,7 +664,8 @@ Future improvement for very large spreadsheets:
 - Keep `WorkbookFactory` only for smaller files or template sample extraction.
 - Add asynchronous upload jobs if ingestion needs to continue after HTTP request timeout limits.
 - Add progress polling for long-running uploads.
-- Add warning counts and field-level error summaries to `UploadDetails`.
+- Generate and expose `processingLogPath` files for detailed upload lifecycle logs.
+- Add field-level warning summaries to `UploadDetails`.
 
 ## 14. Benefits Of The Current Design
 
@@ -601,6 +675,7 @@ Operational benefits:
 - Preview and real ingestion use the same backend engine.
 - Upload failures produce downloadable failed-row files.
 - Active findings remain isolated from historical uploads.
+- Active findings remain independently current per customer + software.
 
 Performance benefits:
 

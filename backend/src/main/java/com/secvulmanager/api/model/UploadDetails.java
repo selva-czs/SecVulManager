@@ -20,6 +20,10 @@ public class UploadDetails {
     @JoinColumn(name = "template_id")
     private CustomerTemplate template;
 
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "software_id")
+    private SecuritySoftware software;
+
     @Column(name = "uploaded_by", nullable = false, length = 100)
     private String uploadedBy;
 
@@ -39,6 +43,12 @@ public class UploadDetails {
     @Column(name = "failed_records", nullable = false)
     private int failedRecords = 0;
 
+    @Column(name = "successful_records", nullable = false, columnDefinition = "integer default 0")
+    private int successfulRecords = 0;
+
+    @Column(name = "warning_records", nullable = false, columnDefinition = "integer default 0")
+    private int warningRecords = 0;
+
     @Column(name = "error_summary", columnDefinition = "TEXT")
     private String errorSummary;
 
@@ -47,6 +57,12 @@ public class UploadDetails {
 
     @Column(name = "sample_file_path", columnDefinition = "TEXT")
     private String sampleFilePath;
+
+    @Column(name = "uploaded_file_path", columnDefinition = "TEXT")
+    private String uploadedFilePath;
+
+    @Column(name = "processing_log_path", columnDefinition = "TEXT")
+    private String processingLogPath;
 
     @Column(name = "is_active_snapshot", nullable = false)
     private boolean isActiveSnapshot = false;
@@ -57,6 +73,7 @@ public class UploadDetails {
     public UploadDetails(Customer customer, CustomerTemplate template, String uploadedBy, String fileName) {
         this.customer = customer;
         this.template = template;
+        this.software = template != null ? template.getSoftware() : null;
         this.uploadedBy = uploadedBy;
         this.fileName = fileName;
     }
@@ -84,6 +101,17 @@ public class UploadDetails {
 
     public void setTemplate(CustomerTemplate template) {
         this.template = template;
+        if (template != null) {
+            this.software = template.getSoftware();
+        }
+    }
+
+    public SecuritySoftware getSoftware() {
+        return software;
+    }
+
+    public void setSoftware(SecuritySoftware software) {
+        this.software = software;
     }
 
     public String getUploadedBy() {
@@ -134,6 +162,22 @@ public class UploadDetails {
         this.failedRecords = failedRecords;
     }
 
+    public int getSuccessfulRecords() {
+        return successfulRecords;
+    }
+
+    public void setSuccessfulRecords(int successfulRecords) {
+        this.successfulRecords = successfulRecords;
+    }
+
+    public int getWarningRecords() {
+        return warningRecords;
+    }
+
+    public void setWarningRecords(int warningRecords) {
+        this.warningRecords = warningRecords;
+    }
+
     public String getErrorSummary() {
         return errorSummary;
     }
@@ -156,6 +200,22 @@ public class UploadDetails {
 
     public void setSampleFilePath(String sampleFilePath) {
         this.sampleFilePath = sampleFilePath;
+    }
+
+    public String getUploadedFilePath() {
+        return uploadedFilePath;
+    }
+
+    public void setUploadedFilePath(String uploadedFilePath) {
+        this.uploadedFilePath = uploadedFilePath;
+    }
+
+    public String getProcessingLogPath() {
+        return processingLogPath;
+    }
+
+    public void setProcessingLogPath(String processingLogPath) {
+        this.processingLogPath = processingLogPath;
     }
 
     public boolean isActiveSnapshot() {

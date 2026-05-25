@@ -81,15 +81,20 @@ CREATE TABLE IF NOT EXISTS upload_details (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     customer_id uuid NOT NULL REFERENCES customer(id) ON DELETE RESTRICT,
     template_id uuid REFERENCES customer_template(id) ON DELETE SET NULL,
+    software_id uuid REFERENCES security_software(id) ON DELETE SET NULL,
     uploaded_by varchar(100) NOT NULL,
     uploaded_at timestamptz NOT NULL DEFAULT now(),
     file_name varchar(255) NOT NULL,
     status varchar(40) NOT NULL DEFAULT 'PROCESSING',
     total_records integer NOT NULL DEFAULT 0,
     failed_records integer NOT NULL DEFAULT 0,
+    successful_records integer NOT NULL DEFAULT 0,
+    warning_records integer NOT NULL DEFAULT 0,
     error_summary text,
     error_log_path text,
     sample_file_path text,
+    uploaded_file_path text,
+    processing_log_path text,
     is_active_snapshot boolean NOT NULL DEFAULT false,
     CONSTRAINT upload_details_status_chk CHECK (status IN ('PROCESSING', 'SUCCESS', 'PARTIAL_FAILURE', 'FAILED'))
 );
@@ -138,6 +143,8 @@ CREATE INDEX IF NOT EXISTS idx_customer_template_software ON customer_template (
 CREATE INDEX IF NOT EXISTS idx_customer_template_active ON customer_template (is_archived, is_enabled);
 CREATE INDEX IF NOT EXISTS idx_customer_software_access_customer ON customer_software_access (customer_id);
 CREATE INDEX IF NOT EXISTS idx_upload_details_customer_uploaded_at ON upload_details (customer_id, uploaded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_upload_details_customer_software_active ON upload_details (customer_id, software_id, is_active_snapshot);
+CREATE INDEX IF NOT EXISTS idx_upload_details_software_uploaded_at ON upload_details (software_id, uploaded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_vulnerability_finding_customer ON vulnerability_finding (customer_id);
 CREATE INDEX IF NOT EXISTS idx_vulnerability_finding_upload ON vulnerability_finding (upload_id);
 CREATE INDEX IF NOT EXISTS idx_vulnerability_finding_severity ON vulnerability_finding (severity);

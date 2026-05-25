@@ -19,6 +19,7 @@ public class DatabaseSchemaMaintenance implements CommandLineRunner {
     public void run(String... args) {
         allowGlobalTemplates();
         keepLegacyTemplateActiveColumnInsertable();
+        backfillUploadSoftwareAndStats();
     }
 
     private void allowGlobalTemplates() {
@@ -58,5 +59,27 @@ public class DatabaseSchemaMaintenance implements CommandLineRunner {
             jdbcTemplate.execute("ALTER TABLE customer_template ALTER COLUMN is_active SET DEFAULT true");
             System.out.println("[DatabaseSchemaMaintenance] Added default for legacy customer_template.is_active column.");
         }
+    }
+
+    private void backfillUploadSoftwareAndStats() {
+        jdbcTemplate.execute("""
+            UPDATE upload_details u
+            SET software_id = t.software_id
+            FROM customer_template t
+            WHERE u.template_id = t.id
+              AND u.software_id IS NULL
+            """);
+        jdbcTemplate.execute("""
+            UPDATE upload_details
+            SET successful_records = GREATEST(total_records - failed_records, 0)
+            WHERE successful_records IS NULL
+            """);
+        jdbcTemplate.execute("UPDATE upload_details SET warning_records = 0 WHERE warning_records IS NULL");
+        jdbcTemplate.execute("""
+            UPDATE upload_details
+            SET uploaded_file_path = sample_file_path
+            WHERE uploaded_file_path IS NULL
+              AND sample_file_path IS NOT NULL
+            """);
     }
 }

@@ -1,8 +1,10 @@
 package com.secvulmanager.api.controller;
 
 import com.secvulmanager.api.model.AppUser;
+import com.secvulmanager.api.model.CustomerSoftwareAccess;
 import com.secvulmanager.api.model.SecuritySoftware;
 import com.secvulmanager.api.repository.AppUserRepository;
+import com.secvulmanager.api.repository.CustomerSoftwareAccessRepository;
 import com.secvulmanager.api.repository.SecuritySoftwareRepository;
 import com.secvulmanager.api.service.AuthorizationUtil;
 import org.springframework.http.HttpStatus;
@@ -11,22 +13,27 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/software")
 public class SecuritySoftwareController {
 
     private final SecuritySoftwareRepository softwareRepository;
+    private final CustomerSoftwareAccessRepository customerSoftwareAccessRepository;
     private final AppUserRepository userRepository;
     private final AuthorizationUtil authUtil;
 
     public SecuritySoftwareController(SecuritySoftwareRepository softwareRepository,
+                                      CustomerSoftwareAccessRepository customerSoftwareAccessRepository,
                                       AppUserRepository userRepository,
                                       AuthorizationUtil authUtil) {
         this.softwareRepository = softwareRepository;
+        this.customerSoftwareAccessRepository = customerSoftwareAccessRepository;
         this.userRepository = userRepository;
         this.authUtil = authUtil;
     }
@@ -38,7 +45,18 @@ public class SecuritySoftwareController {
 
     @GetMapping
     public ResponseEntity<?> getAllSoftware() {
-        return ResponseEntity.ok(softwareRepository.findAll());
+        List<SecuritySoftware> software = softwareRepository.findAll();
+        Map<UUID, List<CustomerSoftwareAccess>> accessBySoftware = customerSoftwareAccessRepository.findAll().stream()
+                .filter(access -> access.getSoftware() != null)
+                .filter(access -> access.getCustomer() != null && !access.getCustomer().isArchived())
+                .collect(Collectors.groupingBy(access -> access.getSoftware().getId()));
+
+        software.forEach(item -> {
+            List<CustomerSoftwareAccess> assignments = accessBySoftware.getOrDefault(item.getId(), List.of());
+            item.setAssignedCustomerCount(assignments.size());
+            item.setEnabledAssignedCustomerCount(assignments.stream().filter(CustomerSoftwareAccess::isEnabled).count());
+        });
+        return ResponseEntity.ok(software);
     }
 
     @PostMapping

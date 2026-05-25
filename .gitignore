@@ -15,3 +15,8 @@ out/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Runtime-generated ingestion and template sample files
+backend/uploads/
+backend/scan-uploads/
+backend/failed-uploads/

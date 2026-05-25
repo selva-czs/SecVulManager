@@ -30,6 +30,12 @@ public class SecuritySoftware {
     @Column(name = "created_at", nullable = false, updatable = false)
     private OffsetDateTime createdAt = OffsetDateTime.now();
 
+    @Transient
+    private long assignedCustomerCount;
+
+    @Transient
+    private long enabledAssignedCustomerCount;
+
     // Constructors
     public SecuritySoftware() {}
 
@@ -93,5 +99,21 @@ public class SecuritySoftware {
 
     public void setCreatedAt(OffsetDateTime createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public long getAssignedCustomerCount() {
+        return assignedCustomerCount;
+    }
+
+    public void setAssignedCustomerCount(long assignedCustomerCount) {
+        this.assignedCustomerCount = assignedCustomerCount;
+    }
+
+    public long getEnabledAssignedCustomerCount() {
+        return enabledAssignedCustomerCount;
+    }
+
+    public void setEnabledAssignedCustomerCount(long enabledAssignedCustomerCount) {
+        this.enabledAssignedCustomerCount = enabledAssignedCustomerCount;
     }
 }

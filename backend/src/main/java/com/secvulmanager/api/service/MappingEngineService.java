@@ -138,6 +138,66 @@ public class MappingEngineService {
         return new MappingPlan(preparedMappings, maxSourceColumnIndex);
     }
 
+    public TemplateCompatibilityResult validateTemplateCompatibility(List<Map<String, Object>> mappings, String[] headers, boolean hasHeaderRow) {
+        if (!hasHeaderRow) {
+            int maxRequiredIndex = mappings.stream()
+                    .filter(this::requiresSourceColumn)
+                    .map(mapping -> parseSourceColumnIndex(mapping, Objects.toString(mapping.get("sourceColumnName"), "")))
+                    .filter(Objects::nonNull)
+                    .max(Integer::compareTo)
+                    .orElse(-1);
+            return TemplateCompatibilityResult.valid("Template has no header row; source column indexes will be validated during row parsing.", maxRequiredIndex, List.of());
+        }
+
+        if (headers == null || headers.length == 0 || Arrays.stream(headers).noneMatch(this::hasText)) {
+            return TemplateCompatibilityResult.invalid("Uploaded file has no readable header row. This active template requires headers saved from the template sample file.");
+        }
+
+        Map<String, String> uploadedHeaders = new HashMap<>();
+        for (String header : headers) {
+            if (hasText(header)) {
+                uploadedHeaders.put(normalizeHeader(header), header.trim());
+            }
+        }
+
+        List<String> missing = new ArrayList<>();
+        List<String> expected = new ArrayList<>();
+        for (Map<String, Object> mapping : mappings) {
+            if (!requiresSourceColumn(mapping)) {
+                continue;
+            }
+            String sourceColumnName = Objects.toString(mapping.get("sourceColumnName"), "").trim();
+            if (!hasText(sourceColumnName)) {
+                continue;
+            }
+            expected.add(sourceColumnName);
+            if (!uploadedHeaders.containsKey(normalizeHeader(sourceColumnName))) {
+                missing.add(sourceColumnName);
+            }
+        }
+
+        if (!missing.isEmpty()) {
+            String visibleMissing = missing.stream().limit(12).toList().toString();
+            String suffix = missing.size() > 12 ? " and " + (missing.size() - 12) + " more" : "";
+            return TemplateCompatibilityResult.invalid(
+                    "Uploaded file does not match the active template headers. Missing required source columns: "
+                            + visibleMissing
+                            + suffix
+                            + ". Select the correct software/template or update the template sample before uploading."
+            );
+        }
+
+        long matchedCount = expected.stream()
+                .map(this::normalizeHeader)
+                .filter(uploadedHeaders::containsKey)
+                .count();
+        int extraCount = Math.max(0, uploadedHeaders.size() - new HashSet<>(expected.stream().map(this::normalizeHeader).toList()).size());
+        List<String> warnings = extraCount > 0
+                ? List.of(extraCount + " additional upload column" + (extraCount == 1 ? "" : "s") + " will be ignored unless mapped.")
+                : List.of();
+        return TemplateCompatibilityResult.valid("Header compatibility passed: " + matchedCount + " mapped source columns matched.", -1, warnings);
+    }
+
     public RowProcessingResult processDataRow(String[] rawRow, MappingPlan plan, UploadDetails runLog, Customer customer) {
         StringBuilder errorReasons = new StringBuilder();
         VulnerabilityFinding finding = new VulnerabilityFinding();
@@ -233,6 +293,25 @@ public class MappingEngineService {
             }
         }
         return null;
+    }
+
+    private boolean requiresSourceColumn(Map<String, Object> mapping) {
+        String targetField = Objects.toString(mapping.get("targetFieldName"), "").trim();
+        if (targetField.isEmpty()) {
+            return false;
+        }
+        String mappingMode = Objects.toString(mapping.get("mappingMode"), "SOURCE").trim();
+        if ("CONSTANT".equalsIgnoreCase(mappingMode)) {
+            return false;
+        }
+        if (hasText(mapping.get("forceValue"))) {
+            return false;
+        }
+        return hasText(mapping.get("sourceColumnName")) || mapping.get("sourceColumnIndex") != null;
+    }
+
+    private String normalizeHeader(String value) {
+        return Objects.toString(value, "").trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
     }
 
     private String applyMappingRules(String rawValue, PreparedMapping mapping) {
@@ -403,6 +482,16 @@ public class MappingEngineService {
     }
 
     public record MappingPlan(List<PreparedMapping> mappings, int maxSourceColumnIndex) {}
+
+    public record TemplateCompatibilityResult(boolean valid, String message, int maxRequiredSourceColumnIndex, List<String> warnings) {
+        static TemplateCompatibilityResult valid(String message, int maxRequiredSourceColumnIndex, List<String> warnings) {
+            return new TemplateCompatibilityResult(true, message, maxRequiredSourceColumnIndex, warnings);
+        }
+
+        static TemplateCompatibilityResult invalid(String message) {
+            return new TemplateCompatibilityResult(false, message, -1, List.of());
+        }
+    }
 
     public record PreparedMapping(
             String targetField,

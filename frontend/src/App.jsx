@@ -271,6 +271,14 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [severityFilter, setSeverityFilter] = useState('ALL');
   const [remediationFilter, setRemediationFilter] = useState('ALL');
+  const [vulnerabilityTab, setVulnerabilityTab] = useState('ACTIVE');
+  const [activeSoftwareFilter, setActiveSoftwareFilter] = useState('ALL');
+  const [activeTemplateFilter, setActiveTemplateFilter] = useState('ALL');
+  const [historySoftwareFilter, setHistorySoftwareFilter] = useState('ALL');
+  const [historyTemplateFilter, setHistoryTemplateFilter] = useState('ALL');
+  const [historyStatusFilter, setHistoryStatusFilter] = useState('ALL');
+  const [historySnapshotFilter, setHistorySnapshotFilter] = useState('ALL');
+  const [historyQuery, setHistoryQuery] = useState('');
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
 
@@ -375,14 +383,24 @@ export default function App() {
       const workflowStatus = rem?.workflowStatus || 'OPEN';
       const text = [f.issueTitle, f.cveId, f.affectedDevices, f.summary].filter(Boolean).join(' ').toLowerCase();
       return (!q || text.includes(q))
+        && (activeSoftwareFilter === 'ALL' || f.upload?.software?.id === activeSoftwareFilter)
+        && (activeTemplateFilter === 'ALL' || f.upload?.template?.id === activeTemplateFilter)
         && (severityFilter === 'ALL' || f.severity === severityFilter)
         && (remediationFilter === 'ALL' || workflowStatus === remediationFilter);
     });
-  }, [selectedCustomers, findingsByCustomer, remediationsByCustomer, searchQuery, severityFilter, remediationFilter]);
+  }, [selectedCustomers, findingsByCustomer, remediationsByCustomer, searchQuery, activeSoftwareFilter, activeTemplateFilter, severityFilter, remediationFilter]);
 
   const selectedHistory = useMemo(() => uploadHistory.filter((run) => (
     selectedCustomerId === 'ALL' || run.customer?.id === selectedCustomerId
-  )), [uploadHistory, selectedCustomerId]);
+  )).filter((run) => {
+    const q = historyQuery.trim().toLowerCase();
+    const text = [run.id, run.fileName, run.uploadedBy, run.customer?.customerName, run.software?.softwareName, run.template?.name].filter(Boolean).join(' ').toLowerCase();
+    return (!q || text.includes(q))
+      && (historySoftwareFilter === 'ALL' || run.software?.id === historySoftwareFilter)
+      && (historyTemplateFilter === 'ALL' || run.template?.id === historyTemplateFilter)
+      && (historyStatusFilter === 'ALL' || run.status === historyStatusFilter)
+      && (historySnapshotFilter === 'ALL' || (historySnapshotFilter === 'ACTIVE' ? run.activeSnapshot : !run.activeSnapshot));
+  }), [uploadHistory, selectedCustomerId, historyQuery, historySoftwareFilter, historyTemplateFilter, historyStatusFilter, historySnapshotFilter]);
   const interactionOpen = templateModal || uploadModalOpen || findingModal || findingDetailModal || uploadDetailModal || userAccessModal;
 
   const handleLogin = async (event) => {
@@ -636,6 +654,7 @@ export default function App() {
               initial={templateModal}
               softwares={softwares}
               customers={allowedCustomers}
+              templates={templates}
               onClose={guardedCloseWorkspace}
               onDone={async () => {
                 setWorkspaceDirty({});
@@ -692,6 +711,14 @@ export default function App() {
             <UploadDetailModal
               run={uploadDetailModal}
               onClose={() => setUploadDetailModal(null)}
+              onActivate={async (run) => {
+                try {
+                  const updated = await api.activateUpload(run.id);
+                  setUploadDetailModal(updated);
+                  await refreshAll();
+                  announce('Upload marked as the active snapshot for this customer and software.');
+                } catch (err) { fail(err); }
+              }}
               onDownloadOriginal={async (run) => {
                 try {
                   const blob = await api.downloadOriginalUpload(run.id);
@@ -730,13 +757,31 @@ export default function App() {
               findings={selectedFindings}
               remediationsByCustomer={remediationsByCustomer}
               templates={templates}
+              softwares={softwares}
               history={selectedHistory}
+              allHistory={uploadHistory}
               searchQuery={searchQuery}
               setSearchQuery={setSearchQuery}
+              vulnerabilityTab={vulnerabilityTab}
+              setVulnerabilityTab={setVulnerabilityTab}
+              activeSoftwareFilter={activeSoftwareFilter}
+              setActiveSoftwareFilter={setActiveSoftwareFilter}
+              activeTemplateFilter={activeTemplateFilter}
+              setActiveTemplateFilter={setActiveTemplateFilter}
               severityFilter={severityFilter}
               setSeverityFilter={setSeverityFilter}
               remediationFilter={remediationFilter}
               setRemediationFilter={setRemediationFilter}
+              historySoftwareFilter={historySoftwareFilter}
+              setHistorySoftwareFilter={setHistorySoftwareFilter}
+              historyTemplateFilter={historyTemplateFilter}
+              setHistoryTemplateFilter={setHistoryTemplateFilter}
+              historyStatusFilter={historyStatusFilter}
+              setHistoryStatusFilter={setHistoryStatusFilter}
+              historySnapshotFilter={historySnapshotFilter}
+              setHistorySnapshotFilter={setHistorySnapshotFilter}
+              historyQuery={historyQuery}
+              setHistoryQuery={setHistoryQuery}
               onOpenUpload={() => setUploadModalOpen(true)}
               onOpenDetails={setFindingDetailModal}
               onOpenUploadDetails={setUploadDetailModal}
@@ -851,6 +896,7 @@ function AlertBox({ children, tone }) {
 }
 
 function VulnerabilityManagement(props) {
+  const latestSoftwareDefaultAppliedRef = useRef(false);
   const criticals = props.findings.filter((f) => f.severity === 'CRITICAL').length;
   const highs = props.findings.filter((f) => f.severity === 'HIGH').length;
   const open = props.findings.filter((f) => {
@@ -861,6 +907,34 @@ function VulnerabilityManagement(props) {
   const recentFindings = [...props.findings]
     .sort((a, b) => (severityRank[b.severity] || 0) - (severityRank[a.severity] || 0))
     .slice(0, 5);
+  const softwareOptions = uploadScopedSoftwareOptions(props.softwares || [], props.allHistory || props.history || [], props.selectedCustomerId);
+  const activeTemplateOptions = (props.templates || []).filter((template) => (
+    !template.archived
+    && (props.activeSoftwareFilter === 'ALL' || template.software?.id === props.activeSoftwareFilter)
+    && (props.selectedCustomerId === 'ALL' || !template.customer || template.customer?.id === props.selectedCustomerId)
+  ));
+  const historyTemplateOptions = (props.templates || []).filter((template) => (
+    !template.archived
+    && (props.historySoftwareFilter === 'ALL' || template.software?.id === props.historySoftwareFilter)
+    && (props.selectedCustomerId === 'ALL' || !template.customer || template.customer?.id === props.selectedCustomerId)
+  ));
+  const {
+    activeSoftwareFilter,
+    mode,
+    setActiveSoftwareFilter,
+    vulnerabilityTab,
+  } = props;
+
+  useEffect(() => {
+    if (latestSoftwareDefaultAppliedRef.current) return;
+    if (mode !== 'management' || vulnerabilityTab !== 'ACTIVE') return;
+    if (activeSoftwareFilter !== 'ALL') return;
+    const latestSoftware = softwareOptions.find((software) => software.latestUploadAt > 0);
+    if (latestSoftware) {
+      latestSoftwareDefaultAppliedRef.current = true;
+      setActiveSoftwareFilter(latestSoftware.id);
+    }
+  }, [mode, vulnerabilityTab, activeSoftwareFilter, setActiveSoftwareFilter, softwareOptions]);
 
   return (
     <div className="space-y-5">
@@ -892,22 +966,70 @@ function VulnerabilityManagement(props) {
 
       {props.mode === 'management' && (
         <>
-          <div className="flex flex-col gap-3 rounded-xl border border-slate-800 bg-slate-900/70 p-4 lg:flex-row lg:items-center">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
-              <TextInput value={props.searchQuery} onChange={(e) => props.setSearchQuery(e.target.value)} placeholder="Search title, CVE, device, or summary" className="pl-9" />
-            </div>
-            <SelectInput value={props.severityFilter} onChange={(e) => props.setSeverityFilter(e.target.value)} className="lg:w-48">
-              <option value="ALL">All severities</option>
-              {SEVERITIES.map((s) => <option key={s} value={s}>{s}</option>)}
-            </SelectInput>
-            <SelectInput value={props.remediationFilter} onChange={(e) => props.setRemediationFilter(e.target.value)} className="lg:w-56">
-              <option value="ALL">All workflow statuses</option>
-              {WORKFLOW_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-            </SelectInput>
+          <div className="flex flex-wrap gap-2 rounded-xl border border-slate-800 bg-slate-900/70 p-2">
+            <button type="button" onClick={() => props.setVulnerabilityTab('ACTIVE')} className={`rounded-lg px-4 py-2 text-sm font-bold ${props.vulnerabilityTab === 'ACTIVE' ? 'bg-brand-blue text-slate-950' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>Active Vulnerabilities</button>
+            <button type="button" onClick={() => props.setVulnerabilityTab('HISTORY')} className={`rounded-lg px-4 py-2 text-sm font-bold ${props.vulnerabilityTab === 'HISTORY' ? 'bg-brand-blue text-slate-950' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>Upload History</button>
           </div>
-          <FindingsTable {...props} />
-          <UploadHistoryTable history={props.history} onOpenRun={props.onOpenUploadDetails} onDownloadErrors={props.onDownloadErrors} onDownloadOriginal={props.onDownloadOriginal} />
+          {props.vulnerabilityTab === 'ACTIVE' ? (
+            <>
+              <div className="grid gap-3 rounded-xl border border-slate-800 bg-slate-900/70 p-4 lg:grid-cols-[minmax(0,1fr)_220px_220px_170px_220px]">
+                <div className="relative">
+                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
+                  <TextInput value={props.searchQuery} onChange={(e) => props.setSearchQuery(e.target.value)} placeholder="Search title, CVE, device, or summary" className="pl-9" />
+                </div>
+                <SelectInput value={props.activeSoftwareFilter} onChange={(e) => {
+                  props.setActiveSoftwareFilter(e.target.value);
+                  props.setActiveTemplateFilter('ALL');
+                }}>
+                  <option value="ALL">All software</option>
+                  {softwareOptions.map((software) => <option key={software.id} value={software.id}>{software.label}</option>)}
+                </SelectInput>
+                <SelectInput value={props.activeTemplateFilter} onChange={(e) => props.setActiveTemplateFilter(e.target.value)}>
+                  <option value="ALL">All templates</option>
+                  {activeTemplateOptions.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                </SelectInput>
+                <SelectInput value={props.severityFilter} onChange={(e) => props.setSeverityFilter(e.target.value)}>
+                  <option value="ALL">All severities</option>
+                  {SEVERITIES.map((s) => <option key={s} value={s}>{s}</option>)}
+                </SelectInput>
+                <SelectInput value={props.remediationFilter} onChange={(e) => props.setRemediationFilter(e.target.value)}>
+                  <option value="ALL">All workflow statuses</option>
+                  {WORKFLOW_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+                </SelectInput>
+              </div>
+              <FindingsTable {...props} />
+            </>
+          ) : (
+            <>
+              <div className="grid gap-3 rounded-xl border border-slate-800 bg-slate-900/70 p-4 lg:grid-cols-[minmax(0,1fr)_220px_220px_180px_190px]">
+                <div className="relative">
+                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
+                  <TextInput value={props.historyQuery} onChange={(e) => props.setHistoryQuery(e.target.value)} placeholder="Search upload id, file, uploader" className="pl-9" />
+                </div>
+                <SelectInput value={props.historySoftwareFilter} onChange={(e) => {
+                  props.setHistorySoftwareFilter(e.target.value);
+                  props.setHistoryTemplateFilter('ALL');
+                }}>
+                  <option value="ALL">All software</option>
+                  {softwareOptions.map((software) => <option key={software.id} value={software.id}>{software.label}</option>)}
+                </SelectInput>
+                <SelectInput value={props.historyTemplateFilter} onChange={(e) => props.setHistoryTemplateFilter(e.target.value)}>
+                  <option value="ALL">All templates</option>
+                  {historyTemplateOptions.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                </SelectInput>
+                <SelectInput value={props.historyStatusFilter} onChange={(e) => props.setHistoryStatusFilter(e.target.value)}>
+                  <option value="ALL">All statuses</option>
+                  {['PROCESSING', 'SUCCESS', 'PARTIAL_FAILURE', 'FAILED'].map((s) => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
+                </SelectInput>
+                <SelectInput value={props.historySnapshotFilter} onChange={(e) => props.setHistorySnapshotFilter(e.target.value)}>
+                  <option value="ALL">All snapshots</option>
+                  <option value="ACTIVE">Latest active only</option>
+                  <option value="HISTORICAL">Historical only</option>
+                </SelectInput>
+              </div>
+              <UploadHistoryTable history={props.history} onOpenRun={props.onOpenUploadDetails} onDownloadErrors={props.onDownloadErrors} onDownloadOriginal={props.onDownloadOriginal} />
+            </>
+          )}
         </>
       )}
     </div>
@@ -979,23 +1101,32 @@ function UploadHistoryTable({ history, onOpenRun, onDownloadErrors, onDownloadOr
             <tr>
               <th className="px-4 py-3">Upload ID</th>
               <th className="px-4 py-3">Customer</th>
+              <th className="px-4 py-3">Software</th>
+              <th className="px-4 py-3">Template</th>
               <th className="px-4 py-3">Uploaded By</th>
               <th className="px-4 py-3">Timestamp</th>
               <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">Snapshot</th>
               <th className="px-4 py-3">Records</th>
               <th className="px-4 py-3 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">
-            {history.length === 0 && <tr><td colSpan="7" className="px-4 py-10 text-center text-slate-500">No upload history for the selected scope.</td></tr>}
+            {history.length === 0 && <tr><td colSpan="10" className="px-4 py-10 text-center text-slate-500">No upload history for the selected scope.</td></tr>}
             {history.map((run) => (
               <tr key={run.id} className="cursor-pointer hover:bg-slate-950/50" onClick={() => onOpenRun(run)}>
                 <td className="px-4 py-3 font-mono text-xs text-slate-400">{run.id}</td>
                 <td className="px-4 py-3">{run.customer?.customerName}</td>
+                <td className="px-4 py-3 text-slate-300">{run.software?.softwareName || run.template?.software?.softwareName || 'N/A'}</td>
+                <td className="px-4 py-3 text-slate-400">{run.template?.name || 'N/A'}</td>
                 <td className="px-4 py-3 text-slate-400">{run.uploadedBy}</td>
                 <td className="px-4 py-3 text-slate-400">{formatDate(run.uploadedAt)}</td>
                 <td className="px-4 py-3"><UploadStatusPill status={run.status} /></td>
-                <td className="px-4 py-3 text-slate-400">{run.totalRecords} total / {run.failedRecords} failed</td>
+                <td className="px-4 py-3"><StatusPill tone={run.activeSnapshot ? 'green' : 'slate'}>{run.activeSnapshot ? 'Latest active' : 'History'}</StatusPill></td>
+                <td className="px-4 py-3 text-slate-400">
+                  <div>{run.totalRecords || 0} total / {run.successfulRecords ?? Math.max((run.totalRecords || 0) - (run.failedRecords || 0), 0)} added</div>
+                  <div className="text-xs text-slate-500">{run.failedRecords || 0} failed / {run.warningRecords || 0} warnings</div>
+                </td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap justify-end gap-2">
                     <Button variant="tertiary" onClick={(event) => {
@@ -1021,6 +1152,34 @@ function UploadHistoryTable({ history, onOpenRun, onDownloadErrors, onDownloadOr
       </div>
     </div>
   );
+}
+
+function uploadScopedSoftwareOptions(softwares, history, selectedCustomerId) {
+  const latestBySoftware = new Map();
+  history.forEach((run) => {
+    if (selectedCustomerId !== 'ALL' && run.customer?.id !== selectedCustomerId) return;
+    if (!run.activeSnapshot || !['SUCCESS', 'PARTIAL_FAILURE'].includes(run.status) || (run.successfulRecords || 0) <= 0) return;
+    const software = run.software || run.template?.software;
+    if (!software?.id) return;
+    const uploadedAt = run.uploadedAt ? new Date(run.uploadedAt).getTime() : 0;
+    const current = latestBySoftware.get(software.id);
+    if (!current || uploadedAt > current.uploadedAt) {
+      latestBySoftware.set(software.id, { uploadedAt, run });
+    }
+  });
+  return softwares
+    .filter((software) => !software.archived)
+    .map((software) => {
+      const latest = latestBySoftware.get(software.id);
+      return {
+        ...software,
+        latestUploadAt: latest?.uploadedAt || 0,
+        label: latest
+          ? `${software.softwareName} · Last ${formatDate(latest.run.uploadedAt)}`
+          : `${software.softwareName} · No upload`,
+      };
+    })
+    .sort((a, b) => (b.latestUploadAt - a.latestUploadAt) || a.softwareName.localeCompare(b.softwareName));
 }
 
 function FindingDetailModal({ finding, remediation, onClose, onRemediation }) {
@@ -1070,21 +1229,26 @@ function FindingDetailModal({ finding, remediation, onClose, onRemediation }) {
   );
 }
 
-function UploadDetailModal({ run, onClose, onDownloadErrors, onDownloadOriginal }) {
+function UploadDetailModal({ run, onClose, onDownloadErrors, onDownloadOriginal, onActivate }) {
+  const successRate = run.totalRecords ? Math.round(((run.successfulRecords || 0) / run.totalRecords) * 100) : 0;
+  const canActivate = !run.activeSnapshot && ['SUCCESS', 'PARTIAL_FAILURE'].includes(run.status) && (run.successfulRecords || 0) > 0;
   return (
     <InteractionPage title="Upload Run Details" subtitle={run.fileName || run.id} icon={<Upload className="h-5 w-5 text-brand-blue" />} onBack={onClose}>
       <div className="grid gap-4 md:grid-cols-3">
         <MetricCard label="Total Records" value={run.totalRecords || 0} />
+        <MetricCard label="Successful Records" value={run.successfulRecords ?? Math.max((run.totalRecords || 0) - (run.failedRecords || 0), 0)} tone={successRate >= 50 ? 'green' : 'amber'} />
         <MetricCard label="Failed Records" value={run.failedRecords || 0} tone={run.failedRecords > 0 ? 'red' : 'green'} />
-        <MetricCard label="Status" value={(run.status || 'PROCESSING').replace('_', ' ')} tone={run.status === 'FAILED' ? 'red' : 'blue'} />
+        <MetricCard label="Success Rate" value={`${successRate}%`} tone={successRate >= 50 ? 'green' : 'amber'} />
       </div>
       <div className="mt-5 grid gap-4 md:grid-cols-2">
         <DetailBlock label="File" value={run.fileName} />
         <DetailBlock label="Customer" value={run.customer?.customerName} />
+        <DetailBlock label="Software" value={run.software?.softwareName || run.template?.software?.softwareName} />
         <DetailBlock label="Template" value={run.template?.name} />
         <DetailBlock label="Uploaded By" value={run.uploadedBy} />
         <DetailBlock label="Uploaded At" value={formatDate(run.uploadedAt)} />
         <DetailBlock label="Active Snapshot" value={run.activeSnapshot ? 'Yes' : 'No'} />
+        <DetailBlock label="Status" value={(run.status || 'PROCESSING').replace('_', ' ')} />
       </div>
       <div className="mt-5">
         <DetailBlock label="Error Summary" value={run.errorSummary} />
@@ -1096,6 +1260,11 @@ function UploadDetailModal({ run, onClose, onDownloadErrors, onDownloadOriginal 
         {run.failedRecords > 0 && (
           <Button variant="warn" onClick={() => onDownloadErrors(run)}>
             <Download className="h-4 w-4" /> Download Failed Records
+          </Button>
+        )}
+        {canActivate && (
+          <Button variant="gradient" onClick={() => onActivate(run)}>
+            <CheckCircle className="h-4 w-4" /> Make Active
           </Button>
         )}
       </div>
@@ -1164,24 +1333,28 @@ function SoftwareManager({ canManage, softwares, templates, customers, onRefresh
           </div>
         </div>
         <div className="overflow-hidden rounded-xl border border-slate-800">
-          <table className="w-full min-w-[760px] text-left text-sm">
+          <table className="w-full min-w-[860px] text-left text-sm">
             <thead className="bg-slate-950 text-[10px] uppercase tracking-wider text-slate-500">
               <tr>
                 <th className="px-4 py-3">Vendor</th>
-                <th className="px-4 py-3">Assigned Software</th>
+                <th className="px-4 py-3">Assigned Customers</th>
+                <th className="px-4 py-3">Templates</th>
                 <th className="px-4 py-3">Active Templates</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">
-              {visibleSoftware.length === 0 && <tr><td colSpan="5" className="px-4 py-10 text-center text-slate-500">No software vendors match the filters.</td></tr>}
+              {visibleSoftware.length === 0 && <tr><td colSpan="6" className="px-4 py-10 text-center text-slate-500">No software vendors match the filters.</td></tr>}
               {visibleSoftware.map((software) => {
                 const vendorTemplates = templates.filter((template) => template.software?.id === software.id);
                 const activeTemplates = vendorTemplates.filter((template) => template.enabled);
+                const assignedCustomerCount = software.assignedCustomerCount ?? 0;
+                const enabledAssignedCustomerCount = software.enabledAssignedCustomerCount ?? 0;
                 return (
                   <tr key={software.id} className="cursor-pointer hover:bg-slate-950/50" onClick={() => setDetail(software)}>
                     <td className="px-4 py-3 font-semibold">{software.softwareName}</td>
+                    <td className="px-4 py-3 text-slate-400">{enabledAssignedCustomerCount} enabled / {assignedCustomerCount} assigned</td>
                     <td className="px-4 py-3 text-slate-400">{vendorTemplates.length}</td>
                     <td className="px-4 py-3 text-slate-400">{activeTemplates.length}</td>
                     <td className="px-4 py-3">
@@ -2339,7 +2512,7 @@ function FindingModal({ finding, customers, selectedCustomerId, onClose, onDone,
   );
 }
 
-function TemplateModal({ initial, softwares, customers, onClose, onDone, fail, onDirtyChange }) {
+function TemplateModal({ initial, softwares, customers, templates = [], onClose, onDone, fail, onDirtyChange }) {
   const activeSoftwares = softwares.filter((software) => !software.archived);
   const [form, setForm] = useState({
     id: initial.id,
@@ -2377,6 +2550,7 @@ function TemplateModal({ initial, softwares, customers, onClose, onDone, fail, o
   const optionalDestinationMissing = unmappedDestination.filter((field) => !field.required);
   const conversionIssues = getMappingConversionIssues(form.mappings, targetFields);
   const templateDirty = isTemplateDirty(initial, form);
+  const activeTemplateConflict = templatesActiveConflict(initial, form, templates);
   const definitionErrors = {
     name: !hasText(form.name) ? 'Template name is mandatory.' : '',
     softwareId: !form.softwareId ? 'Software is mandatory.' : '',
@@ -2453,7 +2627,7 @@ function TemplateModal({ initial, softwares, customers, onClose, onDone, fail, o
     return true;
   };
 
-  const saveDefinition = async ({ enabledOverride, formOverride } = {}) => {
+  const saveDefinition = async ({ enabledOverride, formOverride, replaceActiveTemplate = false } = {}) => {
     const source = formOverride || form;
     if (source.id) {
       await api.updateTemplate(source.id, {
@@ -2462,13 +2636,14 @@ function TemplateModal({ initial, softwares, customers, onClose, onDone, fail, o
         fileFormat: source.fileFormat,
         hasHeaderRow: source.hasHeaderRow,
         enabled: enabledOverride ?? source.enabled,
+        replaceActiveTemplate,
       });
       return source.id;
     }
-    const template = await api.createTemplate(source.name.trim(), source.fileFormat, source.softwareId, source.customerId || null, source.hasHeaderRow, source.description);
-    if ((enabledOverride ?? source.enabled) !== true) {
-      await api.updateTemplate(template.id, { enabled: false });
-    }
+    const template = await api.createTemplate(source.name.trim(), source.fileFormat, source.softwareId, source.customerId || null, source.hasHeaderRow, source.description, {
+      enabled: enabledOverride ?? source.enabled,
+      replaceActiveTemplate,
+    });
     setForm((prev) => ({ ...prev, id: template.id, saved: true }));
     return template.id;
   };
@@ -2534,7 +2709,7 @@ function TemplateModal({ initial, softwares, customers, onClose, onDone, fail, o
         return false;
       }
       setMapperNotice('Extracting columns from sample file...');
-      const id = await saveDefinition({ formOverride: source });
+      const id = await saveDefinition({ formOverride: source, enabledOverride: source.id ? undefined : false });
       const res = await api.autoGenerateTemplate(id, sampleFile, source.fileFormat, source.hasHeaderRow);
       const headers = res.headers || [];
       const nextMappings = headers.length
@@ -2563,11 +2738,11 @@ function TemplateModal({ initial, softwares, customers, onClose, onDone, fail, o
     setMapperError('');
   };
 
-  const saveTemplateDocument = async ({ draft = false, ignoreSourceAcknowledged = false, ignoreSourceComment = '' } = {}) => {
+  const saveTemplateDocument = async ({ draft = false, enabled = true, replaceActiveTemplate = false, ignoreSourceAcknowledged = false, ignoreSourceComment = '' } = {}) => {
     setSavingTemplate(true);
     setSaveReviewError('');
     try {
-      const id = await saveDefinition({ enabledOverride: draft ? false : form.enabled });
+      const id = await saveDefinition({ enabledOverride: draft ? false : enabled, replaceActiveTemplate: !draft && enabled && replaceActiveTemplate });
       await api.saveTemplateMappings(id, buildMappingDocument({
         status: draft ? 'draft' : 'ready',
         ignoreSourceAcknowledged,
@@ -2588,6 +2763,8 @@ function TemplateModal({ initial, softwares, customers, onClose, onDone, fail, o
       draft,
       acknowledgeIgnoredSources: false,
       ignoreSourceComment: '',
+      makeActive: !draft,
+      replaceActiveTemplate: !draft,
     });
   };
 
@@ -2765,7 +2942,7 @@ function TemplateModal({ initial, softwares, customers, onClose, onDone, fail, o
           requiredMissing={requiredMissing}
           unmappedSource={unmappedSource}
           optionalDestinationMissing={optionalDestinationMissing}
-          templateEnabled={form.enabled}
+          activeTemplateConflict={activeTemplateConflict}
           saving={savingTemplate}
           error={saveReviewError}
           onCancel={() => setSaveReview(null)}
@@ -2778,6 +2955,8 @@ function TemplateModal({ initial, softwares, customers, onClose, onDone, fail, o
               }
               await saveTemplateDocument({
                 draft: saveReview.draft,
+                enabled: saveReview.makeActive,
+                replaceActiveTemplate: saveReview.replaceActiveTemplate,
                 ignoreSourceAcknowledged: !saveReview.draft && unmappedSource.length > 0 ? saveReview.acknowledgeIgnoredSources : false,
                 ignoreSourceComment: !saveReview.draft ? saveReview.ignoreSourceComment : '',
               });
@@ -3264,13 +3443,14 @@ function TemplateSaveReviewDialog({
   requiredMissing,
   unmappedSource,
   optionalDestinationMissing,
-  templateEnabled,
+  activeTemplateConflict,
   saving,
   error,
   onCancel,
   onConfirm,
 }) {
   const requiresIgnoreAcknowledgement = !review.draft && unmappedSource.length > 0;
+  const willReplaceActive = !review.draft && review.makeActive && activeTemplateConflict;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
       <section className="w-full max-w-3xl rounded-xl border border-slate-800 bg-slate-900 p-5 shadow-2xl">
@@ -3347,8 +3527,37 @@ function TemplateSaveReviewDialog({
           </div>
         )}
 
+        {!review.draft && (
+          <div className="mt-4 rounded-lg border border-slate-800 bg-slate-950/70 p-3">
+            <div className="mb-3 text-xs font-bold text-slate-300">Template activation</div>
+            <div className="grid gap-2 md:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => setReview((prev) => ({ ...prev, makeActive: true, replaceActiveTemplate: Boolean(activeTemplateConflict) }))}
+                className={`rounded-lg border p-3 text-left text-sm transition ${review.makeActive ? 'border-brand-blue bg-brand-blue/15 text-white' : 'border-slate-800 bg-slate-900 text-slate-400 hover:text-white'}`}
+              >
+                <div className="font-bold">Make active</div>
+                <div className="mt-1 text-xs text-slate-500">Use this template for future uploads.</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setReview((prev) => ({ ...prev, makeActive: false, replaceActiveTemplate: false }))}
+                className={`rounded-lg border p-3 text-left text-sm transition ${!review.makeActive ? 'border-brand-blue bg-brand-blue/15 text-white' : 'border-slate-800 bg-slate-900 text-slate-400 hover:text-white'}`}
+              >
+                <div className="font-bold">Save inactive</div>
+                <div className="mt-1 text-xs text-slate-500">Save it as ready, but do not allow uploads yet.</div>
+              </button>
+            </div>
+            {willReplaceActive && (
+              <div className="mt-3 rounded border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+                This will replace the current active template <span className="font-bold text-white">{activeTemplateConflict.name}</span>. The existing template will be set inactive.
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="mt-4 rounded-lg border border-slate-800 bg-slate-950/70 p-3 text-sm text-slate-300">
-          Template status after save: <span className="font-bold text-white">{review.draft ? 'Disabled draft' : templateEnabled ? 'Enabled' : 'Disabled'}</span>
+          Template status after save: <span className="font-bold text-white">{review.draft ? 'Disabled draft' : review.makeActive ? 'Active template' : 'Ready but inactive'}</span>
         </div>
 
         {requiresIgnoreAcknowledgement && !review.acknowledgeIgnoredSources && (
@@ -3879,6 +4088,19 @@ function serializeSoftwareAssignments(rows = []) {
     .map((row) => `${row.software?.id}:${row.enabled ? 'enabled' : 'disabled'}`)
     .sort()
     .join('|');
+}
+
+function templatesActiveConflict(initial, form, templates = []) {
+  if (!form.softwareId) return null;
+  const customerId = form.customerId || null;
+  const conflict = templates.find((template) => (
+    template.id !== initial.id
+    && template.enabled
+    && !template.archived
+    && template.software?.id === form.softwareId
+    && ((customerId && template.customer?.id === customerId) || (!customerId && !template.customer))
+  ));
+  return conflict || null;
 }
 
 function parseMappings(raw, targetFields = TARGET_FIELDS) {

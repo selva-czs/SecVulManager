@@ -128,10 +128,10 @@ export const api = {
     apiFetch(customerId ? `/customers/${customerId}/templates` : '/templates', {
       method: 'GET'
     }),
-  createTemplate: (templateName, fileFormat, softwareId, customerId = null, hasHeaderRow = true, description = '') => 
+  createTemplate: (templateName, fileFormat, softwareId, customerId = null, hasHeaderRow = true, description = '', options = {}) => 
     apiFetch(customerId ? `/customers/${customerId}/software/${softwareId}/templates` : `/software/${softwareId}/templates`, {
       method: 'POST',
-      body: JSON.stringify({ name: templateName, fileFormat, hasHeaderRow, description })
+      body: JSON.stringify({ name: templateName, fileFormat, hasHeaderRow, description, ...options })
     }),
   updateTemplate: (templateId, patch) =>
     apiFetch(`/templates/${templateId}`, {
@@ -178,10 +178,17 @@ export const api = {
       body: formData
     });
   },
-  getUploadHistory: (customerId = null) => 
-    apiFetch(customerId ? `/uploads?customerId=${customerId}` : '/uploads', {
+  getUploadHistory: (filters = {}) => {
+    const params = new URLSearchParams();
+    if (typeof filters === 'string') params.set('customerId', filters);
+    else Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '' && value !== 'ALL') params.set(key, value);
+    });
+    const query = params.toString();
+    return apiFetch(`/uploads${query ? `?${query}` : ''}`, {
       method: 'GET'
-    }),
+    });
+  },
   downloadErrorLog: (uploadId) => 
     apiFetch(`/uploads/${uploadId}/error-log`, {
       method: 'GET'
@@ -190,12 +197,21 @@ export const api = {
     apiFetch(`/uploads/${uploadId}/sample`, {
       method: 'GET'
     }),
+  activateUpload: (uploadId) =>
+    apiFetch(`/uploads/${uploadId}/activate`, {
+      method: 'POST'
+    }),
 
   // --- VULNERABILITIES & REMEDIATION ---
-  getActiveFindings: (customerId) => 
-    apiFetch(`/vulnerabilities?customerId=${customerId}`, {
+  getActiveFindings: (customerId, filters = {}) => {
+    const params = new URLSearchParams({ customerId });
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '' && value !== 'ALL') params.set(key, value);
+    });
+    return apiFetch(`/vulnerabilities?${params.toString()}`, {
       method: 'GET'
-    }),
+    });
+  },
   getRemediations: (customerId) => 
     apiFetch(`/vulnerabilities/remediation?customerId=${customerId}`, {
       method: 'GET'
