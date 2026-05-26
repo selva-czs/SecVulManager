@@ -6,6 +6,7 @@
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/controller/CustomerController.java
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/controller/CustomerTemplateController.java
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/controller/IngestionController.java
+/Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/controller/SavedViewController.java
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/controller/SecuritySoftwareController.java
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/controller/UserController.java
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/controller/VulnerabilityController.java
@@ -17,7 +18,9 @@
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/model/SecuritySoftware.java
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/model/UploadDetails.java
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/model/UserCustomerAccess.java
+/Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/model/UserSavedView.java
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/model/VulnerabilityFinding.java
+/Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/model/VulnerabilityRemediationEvent.java
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/model/VulnerabilityRemediationStatus.java
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/repository/AppUserRepository.java
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/repository/CustomerRepository.java
@@ -26,7 +29,9 @@
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/repository/SecuritySoftwareRepository.java
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/repository/UploadDetailsRepository.java
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/repository/UserCustomerAccessRepository.java
+/Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/repository/UserSavedViewRepository.java
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/repository/VulnerabilityFindingRepository.java
+/Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/repository/VulnerabilityRemediationEventRepository.java
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/repository/VulnerabilityRemediationStatusRepository.java
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/service/AuthorizationUtil.java
 /Users/selva/Downloads/SecVulManager/backend/src/main/java/com/secvulmanager/api/service/DestinationSchemaService.java

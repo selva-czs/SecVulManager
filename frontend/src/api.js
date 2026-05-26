@@ -38,14 +38,17 @@ async function apiFetch(path, options = {}) {
   if (!response.ok) {
     const text = await response.text();
     let msg = 'API Request Failed';
+    let details = null;
     try {
       const json = JSON.parse(text);
+      details = json;
       msg = json.error || json.message || msg;
     } catch {
       msg = text || msg;
     }
     const err = new Error(msg);
     err.status = response.status;
+    err.details = details;
     throw err;
   }
 
@@ -168,11 +171,13 @@ export const api = {
     }),
 
   // --- UPLOADS & INGESTION ---
-  ingestFile: (file, customerId, templateId) => {
+  ingestFile: (file, customerId, templateId, options = {}) => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('customerId', customerId);
     formData.append('templateId', templateId);
+    formData.append('queueMode', options.queueMode || 'REJECT_IF_BUSY');
+    if (options.queueComment) formData.append('queueComment', options.queueComment);
     return apiFetch('/uploads/ingest', {
       method: 'POST',
       body: formData
@@ -216,6 +221,10 @@ export const api = {
     apiFetch(`/vulnerabilities/remediation?customerId=${customerId}`, {
       method: 'GET'
     }),
+  getRemediationEvents: (customerId, logicalFindingHash) =>
+    apiFetch(`/vulnerabilities/remediation/events?customerId=${customerId}&logicalFindingHash=${encodeURIComponent(logicalFindingHash)}`, {
+      method: 'GET'
+    }),
   updateRemediation: (customerId, logicalFindingHash, workflowStatus, notes) => 
     apiFetch('/vulnerabilities/remediation', {
       method: 'POST',
@@ -234,6 +243,28 @@ export const api = {
   deleteFinding: (findingId) =>
     apiFetch(`/vulnerabilities/${findingId}`, {
       method: 'DELETE'
+    }),
+  getSavedViews: (viewType = 'ACTIVE_FINDINGS') =>
+    apiFetch(`/users/me/saved-views?viewType=${encodeURIComponent(viewType)}`, {
+      method: 'GET'
+    }),
+  createSavedView: (view) =>
+    apiFetch('/users/me/saved-views', {
+      method: 'POST',
+      body: JSON.stringify(view)
+    }),
+  updateSavedView: (viewId, view) =>
+    apiFetch(`/users/me/saved-views/${viewId}`, {
+      method: 'PUT',
+      body: JSON.stringify(view)
+    }),
+  deleteSavedView: (viewId) =>
+    apiFetch(`/users/me/saved-views/${viewId}`, {
+      method: 'DELETE'
+    }),
+  setDefaultSavedView: (viewId) =>
+    apiFetch(`/users/me/saved-views/${viewId}/default`, {
+      method: 'POST'
     }),
 
   // --- USER ADMINISTRATION ---

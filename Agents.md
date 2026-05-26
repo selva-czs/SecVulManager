@@ -16,6 +16,7 @@ The product lets an operator upload vulnerability export files from security too
 - `backend/src/main/java/com/secvulmanager/api/controller/`: REST API controllers.
 - `backend/src/main/java/com/secvulmanager/api/service/`: ingestion, authorization, and business logic.
 - `backend/src/main/resources/application.properties`: local PostgreSQL and server configuration.
+- `database/`: canonical PostgreSQL reset, schema, seed, and bootstrap documentation.
 
 Generated folders such as `frontend/node_modules/`, `frontend/dist/`, and `backend/target/` are not architecture sources.
 
@@ -47,6 +48,8 @@ Local default services:
 - Frontend dev server: `http://127.0.0.1:5173/` or `http://localhost:5173/`.
 - Backend API: `http://localhost:8080/api`.
 - PostgreSQL database: `secvulmanager` on `localhost:5432`.
+- Database bootstrap source of truth: `database/01_schema.sql` plus `database/02_seed_minimal.sql`.
+- Hibernate schema behavior: `spring.jpa.hibernate.ddl-auto=validate`; scripts create the schema, the app validates it.
 
 ## Useful Commands
 
@@ -65,6 +68,14 @@ Backend:
 cd backend
 mvn spring-boot:run
 mvn test
+```
+
+Database:
+
+```bash
+createdb secvulmanager
+psql -d secvulmanager -f database/01_schema.sql
+psql -d secvulmanager -f database/02_seed_minimal.sql
 ```
 
 Default seeded login, if the database is empty:
@@ -109,6 +120,8 @@ Important UI behaviors:
 - Manual vulnerability creation and vulnerability edit/delete controls are intentionally hidden from the main user flow for now.
 - Sidebar can be collapsed, pinned/unpinned, and expanded on hover when unpinned.
 - UI supports dark and light themes.
+- Form fields should show explicit visual indicators for required, optional, and defaulted values.
+- Dense filter controls should keep persistent labels, not rely only on placeholder text.
 
 ## UI Interaction Principles
 
@@ -126,6 +139,7 @@ Future UI changes should preserve these product principles:
 - Keep dark and light theme compatibility for every new component by relying on the existing slate/brand utility classes and `theme-light` overrides in `frontend/src/index.css`.
 - Text must fit in compact controls and table rows on desktop and mobile; use truncation or wrapping deliberately.
 - Prefer direct controls: filters, search inputs, toggles, selects, checkboxes, and explicit save/back actions.
+- Reuse shared UI primitives in `frontend/src/App.jsx`, especially `Field`, `FilterField`, `Button`, `StatusPill`, `StatusToggle`, and `InteractionPage`.
 
 ## Template Mapping Concepts
 
@@ -162,15 +176,22 @@ Mapping workspace behavior:
 - Closing or navigating away with unsaved template changes prompts for confirmation.
 - Template save summary and unsaved-change confirmation must use the themed popup, not browser-native confirmation.
 
-Simple transformation options currently exposed in the UI:
+Simple cleanup transformation options currently exposed in the UI:
 
 - `TRIM`
 - `TO_UPPER`
 - `TO_LOWER`
 - `REMOVESPACES`
-- `SET_NULL`
 
-The backend enum contains additional transformation values for compatibility, but the UI intentionally keeps mapper operations simple.
+Null/default/fallback behavior is configured separately through empty-source and conversion-failure controls:
+
+- Leave destination empty
+- Set destination NULL
+- Use default value
+- Reject row
+- Use conversion fallback value
+
+The backend `TransformationType` enum intentionally contains cleanup transforms only.
 
 ## Standard Vulnerability Destination Schema
 
@@ -220,6 +241,8 @@ Key enums:
 - `UserRole`: `SUPER_ADMIN`, `GLOBAL_OPERATOR`, `CUSTOMER_OPERATOR`, `SECURITY_OPERATOR`
 - `FileFormat`: `CSV`, `TSV`, `PSV`, `XLS`, `XLSX`
 - `UploadStatus`: `PROCESSING`, `SUCCESS`, `PARTIAL_FAILURE`, `FAILED`
+- `ProcessingStage`: `FILE_STORED`, `QUEUED`, `VALIDATING_TEMPLATE`, `READING_FILE`, `VALIDATING_HEADERS`, `PROCESSING_ROWS`, `WRITING_FAILED_ROWS`, `SAVING_FINDINGS`, `ACTIVATING_SNAPSHOT`, `COMPLETED`, `FAILED`
+- `QueueMode`: `REJECT_IF_BUSY`, `QUEUE`, `FORCE_ACTIVATE_WHEN_DONE`
 - `SeverityLevel`: `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`
 - `TransformationType`: mapper transformation names.
 
@@ -237,6 +260,7 @@ Backend controllers:
 - `/api/software/{softwareId}/templates`: global software templates.
 - `/api/customers/{customerId}/software/{softwareId}/templates`: customer plus software templates.
 - `/api/uploads`: file ingestion, upload history, error log download, sample download.
+- `/api/uploads/{uploadId}/activate`: manually mark a successful or partially successful upload as the active snapshot.
 - `/api/vulnerabilities`: active findings and manual CRUD endpoints.
 - `/api/vulnerabilities/remediation`: remediation workflow read/update.
 - `/api/users`: user creation, access updates, active status updates.
@@ -255,7 +279,23 @@ Backend controllers:
 - Delimited files are parsed with Apache Commons CSV.
 - Excel files are parsed with Apache POI.
 - Templates with `hasHeaderRow=false` use source column indexes so manually named columns still ingest correctly.
-- Upload runs produce `UploadDetails` rows and may write failed-upload logs under `secvulmanager.failed-uploads-dir`.
+- Upload runs produce `UploadDetails` rows with progress and queue metadata.
+- Upload queue modes let the UI reject, queue, or queue-and-replace when another upload is already processing for the same customer.
+- Upload statistics include `totalRecords`, `processedRecords`, `successfulRecords`, `failedRecords`, and `warningRecords`.
+- Successful uploads replace the active snapshot for the same customer plus software.
+- Partial uploads replace the active snapshot automatically only when at least 50% of rows succeed; lower-success partial uploads stay historical unless manually activated.
+- Failed uploads never replace the active snapshot.
+- Failed-row logs are written under `secvulmanager.failed-uploads-dir`; original uploaded scan files are stored under `secvulmanager.scan-uploads-dir`.
+
+## Database Bootstrap Notes
+
+- The database folder is the setup source of truth, not Hibernate auto-creation.
+- Use `database/00_reset.sql` only for local resets; it drops application tables and data.
+- Use `database/01_schema.sql` to create all application tables, constraints, and indexes.
+- Use `database/02_seed_minimal.sql` to seed the default admin and standard software registry.
+- `database/03_seed_standard_software.sql` remains for older workflows and is idempotent, but is not needed after `02_seed_minimal.sql`.
+- `backend/src/test/java/com/secvulmanager/api/config/DatabaseBootstrapSqlTest.java` guards the schema/seed contract.
+- `DatabaseSchemaMaintenance` still repairs older local databases at startup, but new setup should come from the SQL baseline.
 
 ## Development Guidance For Future Agents
 
@@ -268,4 +308,5 @@ Backend controllers:
 - Reuse existing API wrapper methods instead of calling `fetch` directly from components.
 - Use `lucide-react` icons for buttons and controls when icons are needed.
 - Validate with `npm run lint`, `npm run build`, and `mvn test` when practical.
+- For database changes, update `database/01_schema.sql`, seeds, `database/README.md`, and `DatabaseBootstrapSqlTest` together.
 - Be careful with existing local changes; this folder may not be a git repository.

@@ -1,5 +1,7 @@
 BEGIN;
 
+-- Compatibility seed for older bootstrap instructions.
+-- The latest baseline seed in 02_seed_minimal.sql already inserts these rows.
 INSERT INTO security_software (software_name, is_enabled, is_archived, created_at)
 VALUES
     ('Kaseya', true, false, now()),

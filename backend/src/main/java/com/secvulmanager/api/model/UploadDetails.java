@@ -49,6 +49,32 @@ public class UploadDetails {
     @Column(name = "warning_records", nullable = false, columnDefinition = "integer default 0")
     private int warningRecords = 0;
 
+    @Column(name = "processed_records", nullable = false, columnDefinition = "integer default 0")
+    private int processedRecords = 0;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "processing_stage", nullable = false, length = 60)
+    private Enums.ProcessingStage processingStage = Enums.ProcessingStage.FILE_STORED;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "queue_mode", nullable = false, length = 60)
+    private Enums.QueueMode queueMode = Enums.QueueMode.REJECT_IF_BUSY;
+
+    @Column(name = "queue_comment", columnDefinition = "TEXT")
+    private String queueComment;
+
+    @Column(name = "queued_at")
+    private OffsetDateTime queuedAt;
+
+    @Column(name = "started_at")
+    private OffsetDateTime startedAt;
+
+    @Column(name = "finished_at")
+    private OffsetDateTime finishedAt;
+
+    @Column(name = "replace_active_when_done", nullable = false, columnDefinition = "boolean default false")
+    private boolean replaceActiveWhenDone = false;
+
     @Column(name = "error_summary", columnDefinition = "TEXT")
     private String errorSummary;
 
@@ -176,6 +202,70 @@ public class UploadDetails {
 
     public void setWarningRecords(int warningRecords) {
         this.warningRecords = warningRecords;
+    }
+
+    public int getProcessedRecords() {
+        return processedRecords;
+    }
+
+    public void setProcessedRecords(int processedRecords) {
+        this.processedRecords = processedRecords;
+    }
+
+    public Enums.ProcessingStage getProcessingStage() {
+        return processingStage;
+    }
+
+    public void setProcessingStage(Enums.ProcessingStage processingStage) {
+        this.processingStage = processingStage;
+    }
+
+    public Enums.QueueMode getQueueMode() {
+        return queueMode;
+    }
+
+    public void setQueueMode(Enums.QueueMode queueMode) {
+        this.queueMode = queueMode;
+    }
+
+    public String getQueueComment() {
+        return queueComment;
+    }
+
+    public void setQueueComment(String queueComment) {
+        this.queueComment = queueComment;
+    }
+
+    public OffsetDateTime getQueuedAt() {
+        return queuedAt;
+    }
+
+    public void setQueuedAt(OffsetDateTime queuedAt) {
+        this.queuedAt = queuedAt;
+    }
+
+    public OffsetDateTime getStartedAt() {
+        return startedAt;
+    }
+
+    public void setStartedAt(OffsetDateTime startedAt) {
+        this.startedAt = startedAt;
+    }
+
+    public OffsetDateTime getFinishedAt() {
+        return finishedAt;
+    }
+
+    public void setFinishedAt(OffsetDateTime finishedAt) {
+        this.finishedAt = finishedAt;
+    }
+
+    public boolean isReplaceActiveWhenDone() {
+        return replaceActiveWhenDone;
+    }
+
+    public void setReplaceActiveWhenDone(boolean replaceActiveWhenDone) {
+        this.replaceActiveWhenDone = replaceActiveWhenDone;
     }
 
     public String getErrorSummary() {

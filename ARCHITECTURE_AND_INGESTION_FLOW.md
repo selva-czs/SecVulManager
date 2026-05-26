@@ -15,6 +15,7 @@ Main capabilities:
 - Sample file extraction and column mapping.
 - Backend-powered mapping preview.
 - Large-file vulnerability ingestion.
+- Upload queueing and progress tracking.
 - Upload history and failed-row download.
 - Active finding review.
 - Remediation workflow tracking.
@@ -81,8 +82,10 @@ sequenceDiagram
 
   Operator->>UI: Upload scan file
   UI->>API: POST /api/uploads/ingest
-  API->>ETL: ingestFile()
+  API->>ETL: submitIngestion()
+  ETL->>DB: Reject or queue if customer already has a running upload
   ETL->>FS: Store original upload
+  ETL->>DB: Track processing_stage and processed_records
   ETL->>Engine: Load mapping and validate upload headers
   ETL->>Engine: Compile mapping once
   ETL->>ETL: Stream rows and batch valid findings
@@ -106,8 +109,11 @@ Important frontend responsibilities:
 - Upload template sample files.
 - Display source columns, destination schema, mapping status, and backend preview results.
 - Upload vulnerability scan files for ingestion.
+- Show upload queue choices when another upload is already running for the same customer.
 - Show active vulnerability records and upload history as separate filtered tabs.
+- Show upload progress/status fields including stage, queue comment, processed records, and active snapshot state.
 - Sort vendor/software choices by latest upload time so the newest upload is easiest to review.
+- Show persistent labels on dense filters and visual `Required`, `Optional`, and `Default` indicators on form fields.
 
 API calls should go through `frontend/src/api.js`. Components should not call `fetch` directly.
 
@@ -166,7 +172,7 @@ Main REST areas:
 - `/api/customers`: customer CRUD.
 - `/api/software`: security software CRUD and enable/disable.
 - `/api/templates`: template list, schema, update, mapping save, preview, sample upload, sample download.
-- `/api/uploads`: vulnerability file ingestion, upload history, failed-row download, original upload download.
+- `/api/uploads`: vulnerability file ingestion, queue handling, upload history, failed-row download, original upload download, manual activation.
 - `/api/vulnerabilities`: active findings with customer/software/template filters and manual endpoints.
 - `/api/vulnerabilities/remediation`: remediation workflow read/update.
 - `/api/users`: user administration and customer access.
@@ -190,6 +196,7 @@ GET  /api/uploads
 GET  /api/uploads?customerId=&softwareId=&templateId=&status=&activeSnapshot=
 GET  /api/uploads/{id}/error-log
 GET  /api/uploads/{id}/sample
+POST /api/uploads/{id}/activate
 ```
 
 ## 6. Backend Service Responsibilities
@@ -216,6 +223,8 @@ Responsibilities:
 
 - Resolve customer and template.
 - Create `UploadDetails`.
+- Enforce one non-queued running upload per customer.
+- Queue later uploads when requested.
 - Store the original uploaded scan file.
 - Load mapping configuration.
 - Validate the uploaded file headers against the active template before row conversion.
@@ -225,7 +234,9 @@ Responsibilities:
 - Batch valid findings into PostgreSQL.
 - Stream failed rows to a downloadable error file.
 - Update upload counts and status.
-- Mark the successful upload as the active snapshot for the customer + software.
+- Mark successful uploads as the active snapshot for the customer + software.
+- Mark partial uploads as active only when at least 50% of rows succeed, unless the queued request explicitly asked to replace active when done.
+- Dispatch queued uploads after the active customer lane clears.
 
 `ETLService` should not contain field-level mapping business rules. It should orchestrate ingestion and performance-sensitive batching.
 
@@ -335,6 +346,10 @@ spring.jpa.properties.hibernate.jdbc.batch_size=500
 spring.jpa.properties.hibernate.order_inserts=true
 spring.jpa.properties.hibernate.order_updates=true
 secvulmanager.ingestion.batch-size=500
+secvulmanager.ingestion.max-rows=200000
+secvulmanager.ingestion.max-columns=300
+secvulmanager.ingestion.max-xls-size-bytes=15728640
+secvulmanager.ingestion.max-xlsx-size-bytes=52428800
 ```
 
 ## 8. Why More Services Do Not Slow Ingestion
@@ -441,6 +456,14 @@ erDiagram
     int successfulRecords
     int failedRecords
     int warningRecords
+    int processedRecords
+    string processingStage
+    string queueMode
+    text queueComment
+    timestamp queuedAt
+    timestamp startedAt
+    timestamp finishedAt
+    boolean replaceActiveWhenDone
     boolean isActiveSnapshot
     text uploadedFilePath
     text sampleFilePath
@@ -493,6 +516,32 @@ This keeps historical uploads available while making the current finding set eas
 
 Upload history remains complete and is sorted by `uploadedAt DESC`. It can be filtered by customer, software, template, upload status, and active/historical snapshot state.
 
+### Upload Queue And Progress
+
+Uploads use a customer-level processing lane. At most one non-queued upload can be processing for a customer at a time.
+
+Queue modes:
+
+- `REJECT_IF_BUSY`: default mode. If a customer already has a running upload, the API returns a conflict with details for the UI.
+- `QUEUE`: save the upload as `PROCESSING` with `processingStage=QUEUED`; it starts after the running upload finishes.
+- `FORCE_ACTIVATE_WHEN_DONE`: queue the upload and set `replaceActiveWhenDone=true`, allowing it to replace the active snapshot when it completes with successful rows.
+
+Processing stages:
+
+- `FILE_STORED`
+- `QUEUED`
+- `VALIDATING_TEMPLATE`
+- `READING_FILE`
+- `VALIDATING_HEADERS`
+- `PROCESSING_ROWS`
+- `WRITING_FAILED_ROWS`
+- `SAVING_FINDINGS`
+- `ACTIVATING_SNAPSHOT`
+- `COMPLETED`
+- `FAILED`
+
+The frontend surfaces these through upload history and upload detail pages, including queue comments and processed/total counts.
+
 ### Template Activation Rule
 
 Only one active template is allowed per software scope:
@@ -503,6 +552,17 @@ Only one active template is allowed per software scope:
 When saving a ready template, the UI asks whether to make it active or save it inactive. New inactive templates are created with `is_enabled=false` immediately. If the user chooses active and another active template exists in the same scope, the existing active template is disabled only when the save request explicitly includes the replacement flag. Draft templates are saved inactive and do not replace active templates.
 
 `SecuritySoftware.assignedCustomerCount` and `SecuritySoftware.enabledAssignedCustomerCount` are transient API summary fields calculated from `customer_software_access`; they are not physical `security_software` columns.
+
+### Database Bootstrap Source Of Truth
+
+The `database/` folder defines the fresh setup baseline:
+
+- `00_reset.sql`: drops application tables for local resets.
+- `01_schema.sql`: creates all application tables, constraints, and indexes.
+- `02_seed_minimal.sql`: seeds the default `admin` user and standard software rows.
+- `03_seed_standard_software.sql`: retained for older workflows; idempotent and no longer required after `02_seed_minimal.sql`.
+
+The backend uses `spring.jpa.hibernate.ddl-auto=validate`, so startup validates the SQL-created schema instead of creating or migrating it. `DatabaseBootstrapSqlTest` guards the bootstrap contract in tests.
 
 ## 10. Template Mapping JSON
 
@@ -569,9 +629,18 @@ Failed row handling:
 Upload statistics:
 
 - `totalRecords`: data rows read from the file.
+- `processedRecords`: rows processed so far or final processed count.
 - `successfulRecords`: normalized findings inserted.
 - `failedRecords`: rows written to the failed-row file.
 - `warningRecords`: reserved for non-blocking row warnings.
+
+Queue/progress metadata:
+
+- `processingStage`: lifecycle stage for upload detail/history display.
+- `queueMode`: requested queue behavior.
+- `queueComment`: optional operator note for queue decisions.
+- `queuedAt`, `startedAt`, `finishedAt`: lifecycle timestamps.
+- `replaceActiveWhenDone`: true for queued replacement requests.
 
 Active replacement rules:
 
@@ -663,7 +732,8 @@ Future improvement for very large spreadsheets:
 - Use Apache POI event/SAX parsing for `.xlsx`.
 - Keep `WorkbookFactory` only for smaller files or template sample extraction.
 - Add asynchronous upload jobs if ingestion needs to continue after HTTP request timeout limits.
-- Add progress polling for long-running uploads.
+- Replace coarse 8-second UI refresh polling with a dedicated progress endpoint or event stream if uploads become long-running background jobs.
+- Expand background processing beyond the current customer-lane queue if multi-worker ingestion becomes necessary.
 - Generate and expose `processingLogPath` files for detailed upload lifecycle logs.
 - Add field-level warning summaries to `UploadDetails`.
 

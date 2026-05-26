@@ -10,8 +10,12 @@ import com.secvulmanager.api.model.VulnerabilityFinding;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
 import java.util.*;
 
 @Service
@@ -59,13 +63,29 @@ public class MappingEngineService {
         }
 
         Set<String> mappedTargets = new HashSet<>();
+        Set<String> validConversionTypes = Set.of("NONE", "TO_STRING", "TO_NUMBER", "TO_DATE", "TO_BOOLEAN");
+        Set<String> validConversionErrorModes = Set.of("FAIL_ROW", "SET_NULL", "SET_EMPTY", "SET_CUSTOM");
         for (Map<String, Object> mapping : mappings) {
             String target = Objects.toString(mapping.get("targetFieldName"), "").trim();
             if (!target.isEmpty()) {
                 if (schemaService.field(target) == null) {
                     return MappingConfiguration.failed("Unsupported destination field in mapping: " + target);
                 }
-                mappedTargets.add(target);
+                if (!mappedTargets.add(target)) {
+                    return MappingConfiguration.failed("Duplicate destination field in mapping: " + target);
+                }
+                Integer sourceColumnIndex = parseSourceColumnIndex(mapping, Objects.toString(mapping.get("sourceColumnName"), ""));
+                if (sourceColumnIndex != null && sourceColumnIndex < 0) {
+                    return MappingConfiguration.failed("Source column index cannot be negative for destination field: " + target);
+                }
+                String conversionType = Objects.toString(mapping.get("conversionType"), "NONE").trim().toUpperCase(Locale.ROOT);
+                if (!validConversionTypes.contains(conversionType)) {
+                    return MappingConfiguration.failed("Unsupported conversion type in mapping: " + conversionType);
+                }
+                String conversionErrorMode = Objects.toString(mapping.get("conversionErrorMode"), "FAIL_ROW").trim().toUpperCase(Locale.ROOT);
+                if (!validConversionErrorModes.contains(conversionErrorMode)) {
+                    return MappingConfiguration.failed("Unsupported conversion failure mode in mapping: " + conversionErrorMode);
+                }
             }
             for (Map<String, Object> transform : readTransforms(mapping)) {
                 String action = Objects.toString(transform.get("action"), "");
@@ -315,7 +335,7 @@ public class MappingEngineService {
     }
 
     private String applyMappingRules(String rawValue, PreparedMapping mapping) {
-        String value = rawValue;
+        String value = cleanCellText(rawValue);
         for (Enums.TransformationType transform : mapping.transformations()) {
             value = applyTransformation(value, transform);
         }
@@ -324,7 +344,7 @@ public class MappingEngineService {
             value = mapping.forceValue();
         } else if (mapping.sourceColumnIndex() == null && !hasText(mapping.sourceColumnName())) {
             value = applyEmptySourcePolicy(mapping);
-        } else if (!hasText(value)) {
+        } else if (!hasText(value) || isBlankLikeValue(value)) {
             value = applyEmptySourcePolicy(mapping);
         }
 
@@ -395,6 +415,9 @@ public class MappingEngineService {
             case "TO_STRING" -> value;
             case "TO_NUMBER" -> {
                 String numeric = text.replace(",", "");
+                if (numeric.endsWith("%")) {
+                    numeric = numeric.substring(0, numeric.length() - 1).trim();
+                }
                 BigDecimal number = new BigDecimal(numeric);
                 if ("INTEGER".equalsIgnoreCase(targetDataType) && number.stripTrailingZeros().scale() > 0) {
                     throw new IllegalArgumentException("Value is not a whole number");
@@ -402,20 +425,45 @@ public class MappingEngineService {
                 yield "INTEGER".equalsIgnoreCase(targetDataType) ? String.valueOf(number.intValueExact()) : number.toPlainString();
             }
             case "TO_DATE" -> {
-                try {
-                    yield OffsetDateTime.parse(text, DateTimeFormatter.ISO_OFFSET_DATE_TIME).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
-                } catch (Exception ignored) {
-                    yield OffsetDateTime.parse(text + "T00:00:00+00:00").format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
-                }
+                yield parseCommonVendorDate(text).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
             }
             case "TO_BOOLEAN" -> {
                 String normalized = text.toLowerCase(Locale.ROOT);
-                if (Arrays.asList("true", "1", "yes", "y").contains(normalized)) yield "true";
-                if (Arrays.asList("false", "0", "no", "n").contains(normalized)) yield "false";
+                if (normalized.contains("known exploited vulnerabilities catalog")) yield "true";
+                if (Arrays.asList("true", "1", "yes", "y", "enabled", "known").contains(normalized)) yield "true";
+                if (Arrays.asList("false", "0", "no", "n", "disabled", "unknown", "not known", "none").contains(normalized)) yield "false";
                 throw new IllegalArgumentException("Value is not boolean");
             }
             default -> throw new IllegalArgumentException("Unsupported conversion type " + conversionType);
         };
+    }
+
+    private OffsetDateTime parseCommonVendorDate(String text) {
+        DateTimeFormatter dayMonthNameYear = new DateTimeFormatterBuilder()
+                .parseCaseInsensitive()
+                .appendPattern("dd-MMM-yyyy")
+                .toFormatter(Locale.ENGLISH);
+        try {
+            return OffsetDateTime.parse(text, DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+        } catch (Exception ignored) {
+        }
+        try {
+            return LocalDateTime.parse(text, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")).atOffset(ZoneOffset.UTC);
+        } catch (Exception ignored) {
+        }
+        try {
+            return LocalDate.parse(text, DateTimeFormatter.ISO_LOCAL_DATE).atStartOfDay().atOffset(ZoneOffset.UTC);
+        } catch (Exception ignored) {
+        }
+        try {
+            return LocalDateTime.parse(text, DateTimeFormatter.ofPattern("MM/dd/yyyy HH:mm:ss")).atOffset(ZoneOffset.UTC);
+        } catch (Exception ignored) {
+        }
+        try {
+            return LocalDate.parse(text, dayMonthNameYear).atStartOfDay().atOffset(ZoneOffset.UTC);
+        } catch (Exception ignored) {
+        }
+        return LocalDate.parse(text, DateTimeFormatter.ofPattern("MM/dd/yyyy")).atStartOfDay().atOffset(ZoneOffset.UTC);
     }
 
     private void bindField(VulnerabilityFinding finding, String fieldName, String value) {
@@ -468,7 +516,19 @@ public class MappingEngineService {
     }
 
     private boolean hasText(Object value) {
-        return value != null && !value.toString().trim().isEmpty();
+        return value != null && !cleanCellText(value.toString()).trim().isEmpty();
+    }
+
+    private boolean isBlankLikeValue(String value) {
+        String normalized = cleanCellText(value).trim().toUpperCase(Locale.ROOT);
+        return Set.of("N/A", "NA", "NULL", "-", "--").contains(normalized);
+    }
+
+    private String cleanCellText(String value) {
+        if (value == null) {
+            return null;
+        }
+        return value.replace('\u00A0', ' ').replace("\uFEFF", "");
     }
 
     public record MappingConfiguration(boolean ready, List<Map<String, Object>> mappings, String errorMessage) {

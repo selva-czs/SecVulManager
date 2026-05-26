@@ -29,4 +29,15 @@ ON CONFLICT (username) DO UPDATE SET
     archived_by = NULL,
     updated_at = now();
 
+INSERT INTO security_software (software_name, is_enabled, is_archived, archived_at, archived_by, created_at)
+VALUES
+    ('Kaseya', true, false, NULL, NULL, now()),
+    ('Rapidfire', true, false, NULL, NULL, now()),
+    ('Nessus', true, false, NULL, NULL, now())
+ON CONFLICT (software_name) DO UPDATE SET
+    is_enabled = true,
+    is_archived = false,
+    archived_at = NULL,
+    archived_by = NULL;
+
 COMMIT;

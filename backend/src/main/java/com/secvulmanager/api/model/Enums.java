@@ -9,6 +9,26 @@ public class Enums {
     public enum UploadStatus {
         PROCESSING, SUCCESS, PARTIAL_FAILURE, FAILED
     }
+
+    public enum ProcessingStage {
+        FILE_STORED,
+        QUEUED,
+        VALIDATING_TEMPLATE,
+        READING_FILE,
+        VALIDATING_HEADERS,
+        PROCESSING_ROWS,
+        WRITING_FAILED_ROWS,
+        SAVING_FINDINGS,
+        ACTIVATING_SNAPSHOT,
+        COMPLETED,
+        FAILED
+    }
+
+    public enum QueueMode {
+        REJECT_IF_BUSY,
+        QUEUE,
+        FORCE_ACTIVATE_WHEN_DONE
+    }
     
     public enum SeverityLevel {
         LOW, MEDIUM, HIGH, CRITICAL

@@ -50,7 +50,29 @@ const TARGET_FIELDS = [
 const TRANSFORMS = ['TRIM', 'TO_UPPER', 'TO_LOWER', 'REMOVESPACES'];
 const CONVERSION_TYPES = ['NONE', 'TO_STRING', 'TO_NUMBER', 'TO_DATE', 'TO_BOOLEAN'];
 const SEVERITIES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
-const WORKFLOW_STATUSES = ['OPEN', 'IN_PROGRESS', 'FALSE_POSITIVE', 'RESOLVED'];
+const WORKFLOW_STATUSES = ['OPEN', 'IN_PROGRESS', 'FALSE_POSITIVE', 'RESOLVED', 'ACCEPTED_RISK'];
+const DEFAULT_ACTIVE_VIEW_STATE = {
+  searchQuery: '',
+  activeSoftwareFilter: 'ALL',
+  activeTemplateFilter: 'ALL',
+  severityFilter: 'ALL',
+  remediationFilter: 'ALL',
+  knownExploitedFilter: 'ALL',
+  knownRansomwareFilter: 'ALL',
+  sortField: 'PRIORITY',
+  sortDirection: 'DESC',
+};
+const SORT_OPTIONS = [
+  { value: 'PRIORITY', label: 'Priority' },
+  { value: 'SEVERITY', label: 'Severity' },
+  { value: 'CVSS', label: 'CVSS score' },
+  { value: 'LAST_DETECTED', label: 'Last detected' },
+  { value: 'DEVICES', label: 'Affected devices' },
+  { value: 'TITLE', label: 'Issue title' },
+  { value: 'CUSTOMER', label: 'Customer' },
+  { value: 'SOFTWARE', label: 'Software' },
+  { value: 'WORKFLOW', label: 'Workflow status' },
+];
 const FORMATS = ['CSV', 'TSV', 'PSV', 'XLS', 'XLSX'];
 const TEMPLATE_SAMPLE_TEST_ENABLED = false;
 
@@ -67,14 +89,36 @@ const emptyFinding = {
   knownRansomwareCampaign: false,
 };
 
-function Field({ label, children, required = false, error = '' }) {
+function RequirementBadge({ children, tone = 'slate' }) {
+  const tones = {
+    red: 'border-red-500/30 bg-red-500/10 text-red-300',
+    blue: 'border-brand-blue/25 bg-brand-blue/10 text-brand-blue',
+    slate: 'border-slate-700 bg-slate-900 text-slate-400',
+  };
+  return <span className={`rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${tones[tone]}`}>{children}</span>;
+}
+
+function Field({ label, children, required = false, optional = false, defaultHint = '', hint = '', error = '' }) {
   return (
-    <label className="block">
-      <span className={`mb-2 block text-[10px] font-bold uppercase tracking-wider ${error ? 'text-red-300' : 'text-slate-400'}`}>
-        {label}{required && <span className="ml-1 text-red-300">*</span>}
+    <div className="block">
+      <span className={`mb-2 flex flex-wrap items-center gap-2 text-[10px] font-bold uppercase tracking-wider ${error ? 'text-red-300' : 'text-slate-400'}`}>
+        <span>{label}</span>
+        {required && <RequirementBadge tone="red">Required</RequirementBadge>}
+        {!required && optional && <RequirementBadge>Optional</RequirementBadge>}
+        {defaultHint && <RequirementBadge tone="blue">Default: {defaultHint}</RequirementBadge>}
       </span>
       {children}
+      {hint && !error && <span className="mt-1 block text-xs text-slate-500">{hint}</span>}
       {error && <span className="mt-1 block text-xs font-semibold text-red-300">{error}</span>}
+    </div>
+  );
+}
+
+function FilterField({ label, children, className = '' }) {
+  return (
+    <label className={`block ${className}`}>
+      <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-500">{label}</span>
+      {children}
     </label>
   );
 }
@@ -268,12 +312,12 @@ export default function App() {
   const [findingsByCustomer, setFindingsByCustomer] = useState({});
   const [remediationsByCustomer, setRemediationsByCustomer] = useState({});
 
-  const [searchQuery, setSearchQuery] = useState('');
-  const [severityFilter, setSeverityFilter] = useState('ALL');
-  const [remediationFilter, setRemediationFilter] = useState('ALL');
+  const [draftActiveViewState, setDraftActiveViewState] = useState(DEFAULT_ACTIVE_VIEW_STATE);
+  const [appliedActiveViewState, setAppliedActiveViewState] = useState(DEFAULT_ACTIVE_VIEW_STATE);
+  const [savedViews, setSavedViews] = useState([]);
+  const [selectedSavedViewId, setSelectedSavedViewId] = useState('DEFAULT');
+  const [saveViewName, setSaveViewName] = useState('');
   const [vulnerabilityTab, setVulnerabilityTab] = useState('ACTIVE');
-  const [activeSoftwareFilter, setActiveSoftwareFilter] = useState('ALL');
-  const [activeTemplateFilter, setActiveTemplateFilter] = useState('ALL');
   const [historySoftwareFilter, setHistorySoftwareFilter] = useState('ALL');
   const [historyTemplateFilter, setHistoryTemplateFilter] = useState('ALL');
   const [historyStatusFilter, setHistoryStatusFilter] = useState('ALL');
@@ -285,6 +329,7 @@ export default function App() {
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [findingModal, setFindingModal] = useState(null);
   const [findingDetailModal, setFindingDetailModal] = useState(null);
+  const [findingRemediationEvents, setFindingRemediationEvents] = useState([]);
   const [uploadDetailModal, setUploadDetailModal] = useState(null);
   const [templateModal, setTemplateModal] = useState(null);
   const [userAccessModal, setUserAccessModal] = useState(null);
@@ -328,6 +373,19 @@ export default function App() {
     await refreshFindings(custs || []);
   }
 
+  async function loadSavedViews() {
+    try {
+      const views = await api.getSavedViews('ACTIVE_FINDINGS');
+      setSavedViews(views || []);
+      const defaultView = (views || []).find((view) => view.defaultView);
+      if (defaultView) {
+        applySavedView(defaultView);
+      }
+    } catch (err) {
+      setError(err.message || 'Could not load saved vulnerability views.');
+    }
+  }
+
   async function refreshFindings(customerList = customers) {
     const targetCustomers = selectedCustomerId === 'ALL'
       ? customerList
@@ -358,8 +416,11 @@ export default function App() {
   }
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (user) refreshAll();
+    if (user) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      refreshAll();
+      loadSavedViews();
+    }
     // Initial registry load is intentionally tied to auth state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
@@ -370,25 +431,51 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCustomerId]);
 
+  useEffect(() => {
+    if (!user || !uploadHistory.some((run) => run.status === 'PROCESSING')) return undefined;
+    const interval = window.setInterval(() => {
+      refreshAll().catch((err) => setError(err.message || String(err)));
+    }, 8000);
+    return () => window.clearInterval(interval);
+    // Poll only while upload work is active so history and active findings catch up after background processing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, uploadHistory]);
+
+  useEffect(() => {
+    if (!findingDetailModal?.customer?.id) {
+      return;
+    }
+    const logicalFindingHash = findingHash(findingDetailModal);
+    api.getRemediationEvents(findingDetailModal.customer.id, logicalFindingHash)
+      .then((events) => setFindingRemediationEvents(events || []))
+      .catch(() => setFindingRemediationEvents([]));
+  }, [findingDetailModal]);
+
   const selectedCustomers = useMemo(() => (
     selectedCustomerId === 'ALL' ? allowedCustomers : allowedCustomers.filter((c) => c.id === selectedCustomerId)
   ), [allowedCustomers, selectedCustomerId]);
 
+  const scopedFindings = useMemo(() => (
+    selectedCustomers.flatMap((customer) => (findingsByCustomer[customer.id] || []).map((finding) => ({ ...finding, customer })))
+  ), [selectedCustomers, findingsByCustomer]);
+
   const selectedFindings = useMemo(() => {
-    const rows = selectedCustomers.flatMap((customer) => (findingsByCustomer[customer.id] || []).map((finding) => ({ ...finding, customer })));
-    const q = searchQuery.toLowerCase();
-    return rows.filter((f) => {
+    const q = appliedActiveViewState.searchQuery.toLowerCase();
+    const filtered = scopedFindings.filter((f) => {
       const hash = findingHash(f);
       const rem = remediationsByCustomer[f.customer.id]?.[hash];
       const workflowStatus = rem?.workflowStatus || 'OPEN';
       const text = [f.issueTitle, f.cveId, f.affectedDevices, f.summary].filter(Boolean).join(' ').toLowerCase();
       return (!q || text.includes(q))
-        && (activeSoftwareFilter === 'ALL' || f.upload?.software?.id === activeSoftwareFilter)
-        && (activeTemplateFilter === 'ALL' || f.upload?.template?.id === activeTemplateFilter)
-        && (severityFilter === 'ALL' || f.severity === severityFilter)
-        && (remediationFilter === 'ALL' || workflowStatus === remediationFilter);
+        && (appliedActiveViewState.activeSoftwareFilter === 'ALL' || f.upload?.software?.id === appliedActiveViewState.activeSoftwareFilter)
+        && (appliedActiveViewState.activeTemplateFilter === 'ALL' || f.upload?.template?.id === appliedActiveViewState.activeTemplateFilter)
+        && (appliedActiveViewState.severityFilter === 'ALL' || f.severity === appliedActiveViewState.severityFilter)
+        && (appliedActiveViewState.remediationFilter === 'ALL' || workflowStatus === appliedActiveViewState.remediationFilter)
+        && (appliedActiveViewState.knownExploitedFilter === 'ALL' || f.knownExploited === (appliedActiveViewState.knownExploitedFilter === 'YES'))
+        && (appliedActiveViewState.knownRansomwareFilter === 'ALL' || f.knownRansomwareCampaign === (appliedActiveViewState.knownRansomwareFilter === 'YES'));
     });
-  }, [selectedCustomers, findingsByCustomer, remediationsByCustomer, searchQuery, activeSoftwareFilter, activeTemplateFilter, severityFilter, remediationFilter]);
+    return sortFindings(filtered, appliedActiveViewState, remediationsByCustomer);
+  }, [scopedFindings, remediationsByCustomer, appliedActiveViewState]);
 
   const selectedHistory = useMemo(() => uploadHistory.filter((run) => (
     selectedCustomerId === 'ALL' || run.customer?.id === selectedCustomerId
@@ -402,6 +489,87 @@ export default function App() {
       && (historySnapshotFilter === 'ALL' || (historySnapshotFilter === 'ACTIVE' ? run.activeSnapshot : !run.activeSnapshot));
   }), [uploadHistory, selectedCustomerId, historyQuery, historySoftwareFilter, historyTemplateFilter, historyStatusFilter, historySnapshotFilter]);
   const interactionOpen = templateModal || uploadModalOpen || findingModal || findingDetailModal || uploadDetailModal || userAccessModal;
+
+  function updateDraftActiveView(patch) {
+    setDraftActiveViewState((current) => ({ ...current, ...patch }));
+  }
+
+  function applySavedView(view) {
+    const nextState = normalizeActiveViewState({ ...(view.filters || {}), ...(view.sort || {}) });
+    setDraftActiveViewState(nextState);
+    setAppliedActiveViewState(nextState);
+    setSelectedSavedViewId(view.id || 'DEFAULT');
+    setSaveViewName(view.name || '');
+  }
+
+  function applyActiveFilters() {
+    setAppliedActiveViewState(normalizeActiveViewState(draftActiveViewState));
+  }
+
+  function clearActiveFilters() {
+    setDraftActiveViewState(DEFAULT_ACTIVE_VIEW_STATE);
+    setAppliedActiveViewState(DEFAULT_ACTIVE_VIEW_STATE);
+    setSelectedSavedViewId('DEFAULT');
+    setSaveViewName('');
+  }
+
+  function removeActiveFilter(key) {
+    const next = normalizeActiveViewState(key === 'sortField'
+      ? { ...appliedActiveViewState, sortField: DEFAULT_ACTIVE_VIEW_STATE.sortField, sortDirection: DEFAULT_ACTIVE_VIEW_STATE.sortDirection }
+      : key === 'activeSoftwareFilter'
+        ? { ...appliedActiveViewState, activeSoftwareFilter: 'ALL', activeTemplateFilter: 'ALL' }
+      : { ...appliedActiveViewState, [key]: DEFAULT_ACTIVE_VIEW_STATE[key] });
+    setDraftActiveViewState(next);
+    setAppliedActiveViewState(next);
+  }
+
+  function openFindingDetails(finding) {
+    setFindingRemediationEvents([]);
+    setFindingDetailModal(finding);
+  }
+
+  function closeFindingDetails() {
+    setFindingRemediationEvents([]);
+    setFindingDetailModal(null);
+  }
+
+  async function saveActiveView(defaultView = false) {
+    const name = saveViewName.trim();
+    if (!name) {
+      fail(new Error('Enter a saved view name before saving.'));
+      return;
+    }
+    try {
+      const payload = activeViewPayload(name, draftActiveViewState, defaultView);
+      const view = selectedSavedViewId !== 'DEFAULT'
+        ? await api.updateSavedView(selectedSavedViewId, payload)
+        : await api.createSavedView(payload);
+      await loadSavedViews();
+      applySavedView(view);
+      announce('Saved vulnerability view.');
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  async function deleteActiveView() {
+    if (selectedSavedViewId === 'DEFAULT') return;
+    const confirmed = await confirmAction({
+      title: 'Delete Saved View',
+      message: 'Delete this saved vulnerability view? The findings data will not be affected.',
+      confirmLabel: 'Delete',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+    try {
+      await api.deleteSavedView(selectedSavedViewId);
+      await loadSavedViews();
+      clearActiveFilters();
+      announce('Deleted saved vulnerability view.');
+    } catch (err) {
+      fail(err);
+    }
+  }
 
   const handleLogin = async (event) => {
     event.preventDefault();
@@ -535,10 +703,10 @@ export default function App() {
           </div>
           {authError && <AlertBox tone="red">{authError}</AlertBox>}
           <div className="space-y-4">
-            <Field label="Username">
+            <Field label="Username" required>
               <TextInput value={login.username} onChange={(e) => setLogin({ ...login, username: e.target.value })} placeholder="admin" />
             </Field>
-            <Field label="Password">
+            <Field label="Password" required>
               <TextInput type="password" value={login.password} onChange={(e) => setLogin({ ...login, password: e.target.value })} placeholder="admin_pass" />
             </Field>
             <Button type="submit" variant="gradient" className="w-full py-3">
@@ -697,12 +865,14 @@ export default function App() {
             <FindingDetailModal
               finding={findingDetailModal}
               remediation={remediationsByCustomer[findingDetailModal.customer.id]?.[findingHash(findingDetailModal)]}
-              onClose={() => setFindingDetailModal(null)}
+              remediationEvents={findingRemediationEvents}
+              onClose={closeFindingDetails}
               onRemediation={async (finding, workflowStatus, notes) => {
                 try {
                   await api.updateRemediation(finding.customer.id, findingHash(finding), workflowStatus, notes);
+                  const events = await api.getRemediationEvents(finding.customer.id, findingHash(finding));
+                  setFindingRemediationEvents(events || []);
                   await refreshFindings(customers);
-                  setFindingDetailModal(null);
                   announce('Finding workflow updated.');
                 } catch (err) { fail(err); }
               }}
@@ -760,18 +930,23 @@ export default function App() {
               softwares={softwares}
               history={selectedHistory}
               allHistory={uploadHistory}
-              searchQuery={searchQuery}
-              setSearchQuery={setSearchQuery}
+              scopedFindings={scopedFindings}
+              draftActiveViewState={draftActiveViewState}
+              appliedActiveViewState={appliedActiveViewState}
+              updateDraftActiveView={updateDraftActiveView}
+              applyActiveFilters={applyActiveFilters}
+              clearActiveFilters={clearActiveFilters}
+              removeActiveFilter={removeActiveFilter}
+              savedViews={savedViews}
+              selectedSavedViewId={selectedSavedViewId}
+              setSelectedSavedViewId={setSelectedSavedViewId}
+              saveViewName={saveViewName}
+              setSaveViewName={setSaveViewName}
+              applySavedView={applySavedView}
+              saveActiveView={saveActiveView}
+              deleteActiveView={deleteActiveView}
               vulnerabilityTab={vulnerabilityTab}
               setVulnerabilityTab={setVulnerabilityTab}
-              activeSoftwareFilter={activeSoftwareFilter}
-              setActiveSoftwareFilter={setActiveSoftwareFilter}
-              activeTemplateFilter={activeTemplateFilter}
-              setActiveTemplateFilter={setActiveTemplateFilter}
-              severityFilter={severityFilter}
-              setSeverityFilter={setSeverityFilter}
-              remediationFilter={remediationFilter}
-              setRemediationFilter={setRemediationFilter}
               historySoftwareFilter={historySoftwareFilter}
               setHistorySoftwareFilter={setHistorySoftwareFilter}
               historyTemplateFilter={historyTemplateFilter}
@@ -783,7 +958,7 @@ export default function App() {
               historyQuery={historyQuery}
               setHistoryQuery={setHistoryQuery}
               onOpenUpload={() => setUploadModalOpen(true)}
-              onOpenDetails={setFindingDetailModal}
+              onOpenDetails={openFindingDetails}
               onOpenUploadDetails={setUploadDetailModal}
               onRemediation={async (finding, workflowStatus, notes) => {
                 try {
@@ -886,22 +1061,33 @@ function SidebarUtilityButton({ title, icon, label, onClick, collapsed = false, 
 function AlertBox({ children, tone }) {
   const classes = tone === 'green'
     ? 'border-green-500/30 bg-green-500/10 text-green-300'
-    : 'border-red-500/30 bg-red-500/10 text-red-300';
+    : tone === 'amber'
+      ? 'border-amber-500/30 bg-amber-500/10 text-amber-200'
+      : 'border-red-500/30 bg-red-500/10 text-red-300';
   return (
     <div className={`mb-4 flex items-start gap-2 rounded-lg border p-3 text-sm ${classes}`}>
-      {tone === 'green' ? <CheckCircle className="mt-0.5 h-4 w-4" /> : <AlertCircle className="mt-0.5 h-4 w-4" />}
-      <span>{children}</span>
+      {tone === 'green' ? <CheckCircle className="mt-0.5 h-4 w-4 shrink-0" /> : <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />}
+      <div className="min-w-0 flex-1">{children}</div>
     </div>
   );
 }
 
 function VulnerabilityManagement(props) {
-  const latestSoftwareDefaultAppliedRef = useRef(false);
-  const criticals = props.findings.filter((f) => f.severity === 'CRITICAL').length;
-  const highs = props.findings.filter((f) => f.severity === 'HIGH').length;
-  const open = props.findings.filter((f) => {
+  const draft = props.draftActiveViewState || DEFAULT_ACTIVE_VIEW_STATE;
+  const applied = props.appliedActiveViewState || DEFAULT_ACTIVE_VIEW_STATE;
+  const baseFindings = props.scopedFindings || props.findings;
+  const criticals = baseFindings.filter((f) => f.severity === 'CRITICAL').length;
+  const highs = baseFindings.filter((f) => f.severity === 'HIGH').length;
+  const knownExploited = baseFindings.filter((f) => f.knownExploited).length;
+  const ransomware = baseFindings.filter((f) => f.knownRansomwareCampaign).length;
+  const affectedDevices = baseFindings.reduce((sum, finding) => sum + (finding.numberOfDevices || 0), 0);
+  const open = baseFindings.filter((f) => {
     const rem = props.remediationsByCustomer[f.customer.id]?.[findingHash(f)];
     return !rem || rem.workflowStatus === 'OPEN';
+  }).length;
+  const inProgress = baseFindings.filter((f) => {
+    const rem = props.remediationsByCustomer[f.customer.id]?.[findingHash(f)];
+    return rem?.workflowStatus === 'IN_PROGRESS';
   }).length;
   const severityRank = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
   const recentFindings = [...props.findings]
@@ -910,7 +1096,7 @@ function VulnerabilityManagement(props) {
   const softwareOptions = uploadScopedSoftwareOptions(props.softwares || [], props.allHistory || props.history || [], props.selectedCustomerId);
   const activeTemplateOptions = (props.templates || []).filter((template) => (
     !template.archived
-    && (props.activeSoftwareFilter === 'ALL' || template.software?.id === props.activeSoftwareFilter)
+    && (draft.activeSoftwareFilter === 'ALL' || template.software?.id === draft.activeSoftwareFilter)
     && (props.selectedCustomerId === 'ALL' || !template.customer || template.customer?.id === props.selectedCustomerId)
   ));
   const historyTemplateOptions = (props.templates || []).filter((template) => (
@@ -918,28 +1104,21 @@ function VulnerabilityManagement(props) {
     && (props.historySoftwareFilter === 'ALL' || template.software?.id === props.historySoftwareFilter)
     && (props.selectedCustomerId === 'ALL' || !template.customer || template.customer?.id === props.selectedCustomerId)
   ));
-  const {
-    activeSoftwareFilter,
-    mode,
-    setActiveSoftwareFilter,
-    vulnerabilityTab,
-  } = props;
-
-  useEffect(() => {
-    if (latestSoftwareDefaultAppliedRef.current) return;
-    if (mode !== 'management' || vulnerabilityTab !== 'ACTIVE') return;
-    if (activeSoftwareFilter !== 'ALL') return;
-    const latestSoftware = softwareOptions.find((software) => software.latestUploadAt > 0);
-    if (latestSoftware) {
-      latestSoftwareDefaultAppliedRef.current = true;
-      setActiveSoftwareFilter(latestSoftware.id);
-    }
-  }, [mode, vulnerabilityTab, activeSoftwareFilter, setActiveSoftwareFilter, softwareOptions]);
+  const hasDraftChanges = JSON.stringify(normalizeActiveViewState(draft)) !== JSON.stringify(normalizeActiveViewState(applied));
+  const appliedChips = activeFilterChips(applied, props, softwareOptions);
+  const activeView = props.savedViews?.find((view) => view.id === props.selectedSavedViewId);
+  const chooseMetric = (patch) => props.updateDraftActiveView({ ...patch, activeTemplateFilter: patch.activeSoftwareFilter ? 'ALL' : draft.activeTemplateFilter });
 
   return (
     <div className="space-y-5">
       {props.mode === 'management' && (
-        <div className="flex flex-wrap items-center justify-end gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap gap-2">
+            <StatusPill tone="blue">{props.selectedCustomerId === 'ALL' ? `All customers (${props.customers.length})` : props.customers[0]?.customerName || 'Selected customer'}</StatusPill>
+            <StatusPill tone={applied.activeSoftwareFilter === 'ALL' ? 'slate' : 'blue'}>{filterLabel('Software', applied.activeSoftwareFilter, softwareOptions, 'softwareName')}</StatusPill>
+            <StatusPill tone={applied.severityFilter === 'ALL' ? 'slate' : 'amber'}>{filterLabel('Severity', applied.severityFilter)}</StatusPill>
+            <StatusPill tone={applied.remediationFilter === 'ALL' ? 'slate' : 'green'}>{filterLabel('Workflow', applied.remediationFilter)}</StatusPill>
+          </div>
           <Button variant="gradient" onClick={props.onOpenUpload}>
             <Upload className="h-4 w-4" /> Upload Scan File
           </Button>
@@ -949,7 +1128,7 @@ function VulnerabilityManagement(props) {
       {props.mode === 'dashboard' && (
         <>
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <MetricCard label="Active Findings" value={props.findings.length} />
+            <MetricCard label="Active Findings" value={baseFindings.length} />
             <MetricCard label="Critical" value={criticals} tone="red" />
             <MetricCard label="High" value={highs} tone="amber" />
             <MetricCard label="Open Workflow" value={open} tone="green" />
@@ -972,60 +1151,161 @@ function VulnerabilityManagement(props) {
           </div>
           {props.vulnerabilityTab === 'ACTIVE' ? (
             <>
-              <div className="grid gap-3 rounded-xl border border-slate-800 bg-slate-900/70 p-4 lg:grid-cols-[minmax(0,1fr)_220px_220px_170px_220px]">
-                <div className="relative">
-                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
-                  <TextInput value={props.searchQuery} onChange={(e) => props.setSearchQuery(e.target.value)} placeholder="Search title, CVE, device, or summary" className="pl-9" />
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+                <button type="button" onClick={() => chooseMetric({ severityFilter: 'ALL', remediationFilter: 'ALL', knownExploitedFilter: 'ALL', knownRansomwareFilter: 'ALL' })} className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 text-left hover:border-brand-blue">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Active</div>
+                  <div className="mt-1 text-2xl font-extrabold text-brand-blue">{baseFindings.length}</div>
+                </button>
+                <button type="button" onClick={() => chooseMetric({ severityFilter: 'CRITICAL' })} className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 text-left hover:border-red-400">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Critical</div>
+                  <div className="mt-1 text-2xl font-extrabold text-red-300">{criticals}</div>
+                </button>
+                <button type="button" onClick={() => chooseMetric({ severityFilter: 'HIGH' })} className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 text-left hover:border-amber-400">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">High</div>
+                  <div className="mt-1 text-2xl font-extrabold text-amber-300">{highs}</div>
+                </button>
+                <button type="button" onClick={() => chooseMetric({ knownExploitedFilter: 'YES' })} className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 text-left hover:border-red-400">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Known Exploited</div>
+                  <div className="mt-1 text-2xl font-extrabold text-red-300">{knownExploited}</div>
+                </button>
+                <button type="button" onClick={() => chooseMetric({ remediationFilter: 'OPEN' })} className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 text-left hover:border-green-400">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Open Workflow</div>
+                  <div className="mt-1 text-2xl font-extrabold text-green-300">{open}</div>
+                </button>
+              </div>
+
+              <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+                <div className="mb-4 grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)_160px_160px_auto]">
+                  <FilterField label="View">
+                    <SelectInput value={props.selectedSavedViewId} onChange={(e) => {
+                      const selected = props.savedViews.find((view) => view.id === e.target.value);
+                      if (selected) props.applySavedView(selected);
+                      else {
+                        props.setSelectedSavedViewId('DEFAULT');
+                        props.clearActiveFilters();
+                      }
+                    }}>
+                      <option value="DEFAULT">Default: All active findings</option>
+                      {props.savedViews.map((view) => <option key={view.id} value={view.id}>{view.defaultView ? 'Default - ' : ''}{view.name}</option>)}
+                    </SelectInput>
+                  </FilterField>
+                  <FilterField label="Saved view name">
+                    <TextInput value={props.saveViewName} onChange={(e) => props.setSaveViewName(e.target.value)} placeholder="Example: Critical Nessus open" />
+                  </FilterField>
+                  <Button type="button" variant="secondary" onClick={() => props.saveActiveView(false)}>Save view</Button>
+                  <Button type="button" variant="tertiary" disabled={!activeView} onClick={() => props.saveActiveView(true)}>Save default</Button>
+                  <Button type="button" variant="danger" disabled={!activeView} onClick={props.deleteActiveView}><Trash2 className="h-4 w-4" /> Delete</Button>
                 </div>
-                <SelectInput value={props.activeSoftwareFilter} onChange={(e) => {
-                  props.setActiveSoftwareFilter(e.target.value);
-                  props.setActiveTemplateFilter('ALL');
-                }}>
-                  <option value="ALL">All software</option>
-                  {softwareOptions.map((software) => <option key={software.id} value={software.id}>{software.label}</option>)}
-                </SelectInput>
-                <SelectInput value={props.activeTemplateFilter} onChange={(e) => props.setActiveTemplateFilter(e.target.value)}>
-                  <option value="ALL">All templates</option>
-                  {activeTemplateOptions.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
-                </SelectInput>
-                <SelectInput value={props.severityFilter} onChange={(e) => props.setSeverityFilter(e.target.value)}>
-                  <option value="ALL">All severities</option>
-                  {SEVERITIES.map((s) => <option key={s} value={s}>{s}</option>)}
-                </SelectInput>
-                <SelectInput value={props.remediationFilter} onChange={(e) => props.setRemediationFilter(e.target.value)}>
-                  <option value="ALL">All workflow statuses</option>
-                  {WORKFLOW_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-                </SelectInput>
+
+                <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_200px_200px_160px_190px]">
+                  <FilterField label="Search findings" className="relative">
+                    <Search className="absolute left-3 top-7 h-4 w-4 text-slate-500" />
+                    <TextInput value={draft.searchQuery} onChange={(e) => props.updateDraftActiveView({ searchQuery: e.target.value })} placeholder="Search title, CVE, device, or summary" className="pl-9" />
+                  </FilterField>
+                  <FilterField label="Software">
+                    <SelectInput value={draft.activeSoftwareFilter} onChange={(e) => props.updateDraftActiveView({ activeSoftwareFilter: e.target.value, activeTemplateFilter: 'ALL' })}>
+                      <option value="ALL">All software</option>
+                      {softwareOptions.map((software) => <option key={software.id} value={software.id}>{software.label}</option>)}
+                    </SelectInput>
+                  </FilterField>
+                  <FilterField label="Template">
+                    <SelectInput value={draft.activeTemplateFilter} onChange={(e) => props.updateDraftActiveView({ activeTemplateFilter: e.target.value })}>
+                      <option value="ALL">All templates</option>
+                      {activeTemplateOptions.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                    </SelectInput>
+                  </FilterField>
+                  <FilterField label="Severity">
+                    <SelectInput value={draft.severityFilter} onChange={(e) => props.updateDraftActiveView({ severityFilter: e.target.value })}>
+                      <option value="ALL">All severities</option>
+                      {SEVERITIES.map((s) => <option key={s} value={s}>{s}</option>)}
+                    </SelectInput>
+                  </FilterField>
+                  <FilterField label="Workflow">
+                    <SelectInput value={draft.remediationFilter} onChange={(e) => props.updateDraftActiveView({ remediationFilter: e.target.value })}>
+                      <option value="ALL">All workflow statuses</option>
+                      {WORKFLOW_STATUSES.map((s) => <option key={s} value={s}>{workflowLabel(s)}</option>)}
+                    </SelectInput>
+                  </FilterField>
+                  <FilterField label="Known exploited">
+                    <SelectInput value={draft.knownExploitedFilter} onChange={(e) => props.updateDraftActiveView({ knownExploitedFilter: e.target.value })}>
+                      <option value="ALL">Any exploited status</option>
+                      <option value="YES">Known exploited only</option>
+                      <option value="NO">Not known exploited</option>
+                    </SelectInput>
+                  </FilterField>
+                  <FilterField label="Ransomware campaign">
+                    <SelectInput value={draft.knownRansomwareFilter} onChange={(e) => props.updateDraftActiveView({ knownRansomwareFilter: e.target.value })}>
+                      <option value="ALL">Any ransomware status</option>
+                      <option value="YES">Known campaign only</option>
+                      <option value="NO">No known campaign</option>
+                    </SelectInput>
+                  </FilterField>
+                  <FilterField label="Sort by">
+                    <SelectInput value={draft.sortField} onChange={(e) => props.updateDraftActiveView({ sortField: e.target.value })}>
+                      {SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </SelectInput>
+                  </FilterField>
+                  <FilterField label="Direction">
+                    <SelectInput value={draft.sortDirection} onChange={(e) => props.updateDraftActiveView({ sortDirection: e.target.value })}>
+                      <option value="DESC">Descending</option>
+                      <option value="ASC">Ascending</option>
+                    </SelectInput>
+                  </FilterField>
+                  <div className="flex items-end gap-2">
+                    <Button type="button" variant="gradient" onClick={props.applyActiveFilters}>Apply filters</Button>
+                    <Button type="button" variant="ghost" onClick={props.clearActiveFilters}>Clear all</Button>
+                  </div>
+                </div>
+                {hasDraftChanges && <div className="mt-3 text-xs font-semibold text-amber-300">Filter changes are staged. Apply filters to update results.</div>}
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/70 p-3">
+                <div className="text-sm text-slate-300">Showing <span className="font-bold text-white">{props.findings.length}</span> of <span className="font-bold text-white">{baseFindings.length}</span> active findings · <span className="font-bold text-white">{affectedDevices}</span> affected devices in scope · <span className="font-bold text-white">{ransomware}</span> ransomware campaign flags · <span className="font-bold text-white">{inProgress}</span> in progress</div>
+                <div className="flex flex-wrap gap-2">
+                  {appliedChips.length === 0 ? <StatusPill tone="slate">Showing all data</StatusPill> : appliedChips.map((chip) => (
+                    <button key={chip.key} type="button" onClick={() => props.removeActiveFilter(chip.key)} className="rounded-md border border-brand-blue/25 bg-brand-blue/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-brand-blue">
+                      {chip.label} x
+                    </button>
+                  ))}
+                </div>
               </div>
               <FindingsTable {...props} />
             </>
           ) : (
             <>
               <div className="grid gap-3 rounded-xl border border-slate-800 bg-slate-900/70 p-4 lg:grid-cols-[minmax(0,1fr)_220px_220px_180px_190px]">
-                <div className="relative">
-                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
+                <FilterField label="Search uploads" className="relative">
+                  <Search className="absolute left-3 top-7 h-4 w-4 text-slate-500" />
                   <TextInput value={props.historyQuery} onChange={(e) => props.setHistoryQuery(e.target.value)} placeholder="Search upload id, file, uploader" className="pl-9" />
-                </div>
-                <SelectInput value={props.historySoftwareFilter} onChange={(e) => {
-                  props.setHistorySoftwareFilter(e.target.value);
-                  props.setHistoryTemplateFilter('ALL');
-                }}>
-                  <option value="ALL">All software</option>
-                  {softwareOptions.map((software) => <option key={software.id} value={software.id}>{software.label}</option>)}
-                </SelectInput>
-                <SelectInput value={props.historyTemplateFilter} onChange={(e) => props.setHistoryTemplateFilter(e.target.value)}>
-                  <option value="ALL">All templates</option>
-                  {historyTemplateOptions.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
-                </SelectInput>
-                <SelectInput value={props.historyStatusFilter} onChange={(e) => props.setHistoryStatusFilter(e.target.value)}>
-                  <option value="ALL">All statuses</option>
-                  {['PROCESSING', 'SUCCESS', 'PARTIAL_FAILURE', 'FAILED'].map((s) => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
-                </SelectInput>
-                <SelectInput value={props.historySnapshotFilter} onChange={(e) => props.setHistorySnapshotFilter(e.target.value)}>
-                  <option value="ALL">All snapshots</option>
-                  <option value="ACTIVE">Latest active only</option>
-                  <option value="HISTORICAL">Historical only</option>
-                </SelectInput>
+                </FilterField>
+                <FilterField label="Software">
+                  <SelectInput value={props.historySoftwareFilter} onChange={(e) => {
+                    props.setHistorySoftwareFilter(e.target.value);
+                    props.setHistoryTemplateFilter('ALL');
+                  }}>
+                    <option value="ALL">All software</option>
+                    {softwareOptions.map((software) => <option key={software.id} value={software.id}>{software.label}</option>)}
+                  </SelectInput>
+                </FilterField>
+                <FilterField label="Template">
+                  <SelectInput value={props.historyTemplateFilter} onChange={(e) => props.setHistoryTemplateFilter(e.target.value)}>
+                    <option value="ALL">All templates</option>
+                    {historyTemplateOptions.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                  </SelectInput>
+                </FilterField>
+                <FilterField label="Upload status">
+                  <SelectInput value={props.historyStatusFilter} onChange={(e) => props.setHistoryStatusFilter(e.target.value)}>
+                    <option value="ALL">All statuses</option>
+                    {['PROCESSING', 'SUCCESS', 'PARTIAL_FAILURE', 'FAILED'].map((s) => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
+                  </SelectInput>
+                </FilterField>
+                <FilterField label="Snapshot">
+                  <SelectInput value={props.historySnapshotFilter} onChange={(e) => props.setHistorySnapshotFilter(e.target.value)}>
+                    <option value="ALL">All snapshots</option>
+                    <option value="ACTIVE">Latest active only</option>
+                    <option value="HISTORICAL">Historical only</option>
+                  </SelectInput>
+                </FilterField>
               </div>
               <UploadHistoryTable history={props.history} onOpenRun={props.onOpenUploadDetails} onDownloadErrors={props.onDownloadErrors} onDownloadOriginal={props.onDownloadOriginal} />
             </>
@@ -1046,6 +1326,7 @@ function FindingsTable({ findings, remediationsByCustomer, onOpenDetails, compac
               <th className="px-4 py-3">Severity</th>
               <th className="px-4 py-3">Issue</th>
               <th className="px-4 py-3">Customer</th>
+              <th className="px-4 py-3">Software</th>
               <th className="px-4 py-3">CVSS</th>
               <th className="px-4 py-3">Devices</th>
               <th className="px-4 py-3">Workflow</th>
@@ -1053,7 +1334,7 @@ function FindingsTable({ findings, remediationsByCustomer, onOpenDetails, compac
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">
-            {findings.length === 0 && <tr><td colSpan="7" className="px-4 py-10 text-center text-slate-500">No active findings match the current filters.</td></tr>}
+            {findings.length === 0 && <tr><td colSpan="8" className="px-4 py-10 text-center text-slate-500">No active findings match the current filters.</td></tr>}
             {findings.map((finding) => {
               const hash = findingHash(finding);
               const rem = remediationsByCustomer[finding.customer.id]?.[hash];
@@ -1069,6 +1350,7 @@ function FindingsTable({ findings, remediationsByCustomer, onOpenDetails, compac
                       </div>
                     </td>
                     <td className="px-4 py-3 text-slate-300">{finding.customer.customerName}</td>
+                    <td className="px-4 py-3 text-slate-300">{finding.upload?.software?.softwareName || 'N/A'}</td>
                     <td className="px-4 py-3 font-mono">{formatScore(finding.cvssScore)}</td>
                     <td className="px-4 py-3 text-slate-400">{finding.numberOfDevices || 0}</td>
                     <td className="px-4 py-3"><WorkflowPill status={status} /></td>
@@ -1106,13 +1388,14 @@ function UploadHistoryTable({ history, onOpenRun, onDownloadErrors, onDownloadOr
               <th className="px-4 py-3">Uploaded By</th>
               <th className="px-4 py-3">Timestamp</th>
               <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">Stage</th>
               <th className="px-4 py-3">Snapshot</th>
               <th className="px-4 py-3">Records</th>
               <th className="px-4 py-3 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">
-            {history.length === 0 && <tr><td colSpan="10" className="px-4 py-10 text-center text-slate-500">No upload history for the selected scope.</td></tr>}
+            {history.length === 0 && <tr><td colSpan="11" className="px-4 py-10 text-center text-slate-500">No upload history for the selected scope.</td></tr>}
             {history.map((run) => (
               <tr key={run.id} className="cursor-pointer hover:bg-slate-950/50" onClick={() => onOpenRun(run)}>
                 <td className="px-4 py-3 font-mono text-xs text-slate-400">{run.id}</td>
@@ -1122,9 +1405,16 @@ function UploadHistoryTable({ history, onOpenRun, onDownloadErrors, onDownloadOr
                 <td className="px-4 py-3 text-slate-400">{run.uploadedBy}</td>
                 <td className="px-4 py-3 text-slate-400">{formatDate(run.uploadedAt)}</td>
                 <td className="px-4 py-3"><UploadStatusPill status={run.status} /></td>
+                <td className="px-4 py-3">
+                  <div className="space-y-1">
+                    <ProcessingStagePill stage={run.processingStage} queueMode={run.queueMode} />
+                    {run.queueComment && <div className="max-w-[220px] truncate text-xs text-slate-500">{run.queueComment}</div>}
+                  </div>
+                </td>
                 <td className="px-4 py-3"><StatusPill tone={run.activeSnapshot ? 'green' : 'slate'}>{run.activeSnapshot ? 'Latest active' : 'History'}</StatusPill></td>
                 <td className="px-4 py-3 text-slate-400">
-                  <div>{run.totalRecords || 0} total / {run.successfulRecords ?? Math.max((run.totalRecords || 0) - (run.failedRecords || 0), 0)} added</div>
+                  <div>{run.processedRecords || 0} processed / {run.totalRecords || 0} total</div>
+                  <div>{run.successfulRecords ?? Math.max((run.totalRecords || 0) - (run.failedRecords || 0), 0)} added</div>
                   <div className="text-xs text-slate-500">{run.failedRecords || 0} failed / {run.warningRecords || 0} warnings</div>
                 </td>
                 <td className="px-4 py-3">
@@ -1152,6 +1442,89 @@ function UploadHistoryTable({ history, onOpenRun, onDownloadErrors, onDownloadOr
       </div>
     </div>
   );
+}
+
+function normalizeActiveViewState(state = {}) {
+  return { ...DEFAULT_ACTIVE_VIEW_STATE, ...state };
+}
+
+function activeViewPayload(name, state, defaultView) {
+  const normalized = normalizeActiveViewState(state);
+  return {
+    name,
+    viewType: 'ACTIVE_FINDINGS',
+    defaultView,
+    filters: {
+      searchQuery: normalized.searchQuery,
+      activeSoftwareFilter: normalized.activeSoftwareFilter,
+      activeTemplateFilter: normalized.activeTemplateFilter,
+      severityFilter: normalized.severityFilter,
+      remediationFilter: normalized.remediationFilter,
+      knownExploitedFilter: normalized.knownExploitedFilter,
+      knownRansomwareFilter: normalized.knownRansomwareFilter,
+    },
+    sort: {
+      sortField: normalized.sortField,
+      sortDirection: normalized.sortDirection,
+    },
+  };
+}
+
+function sortFindings(findings, viewState, remediationsByCustomer) {
+  const severityRank = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
+  const direction = viewState.sortDirection === 'ASC' ? 1 : -1;
+  const workflowValue = (finding) => remediationsByCustomer[finding.customer.id]?.[findingHash(finding)]?.workflowStatus || 'OPEN';
+  const softwareValue = (finding) => finding.upload?.software?.softwareName || '';
+  const valueFor = (finding) => {
+    switch (viewState.sortField) {
+      case 'SEVERITY': return severityRank[finding.severity] || 0;
+      case 'CVSS': return Number(finding.cvssScore || 0);
+      case 'LAST_DETECTED': return finding.lastDetectedAt ? new Date(finding.lastDetectedAt).getTime() : 0;
+      case 'DEVICES': return finding.numberOfDevices || 0;
+      case 'TITLE': return finding.issueTitle || '';
+      case 'CUSTOMER': return finding.customer?.customerName || '';
+      case 'SOFTWARE': return softwareValue(finding);
+      case 'WORKFLOW': return workflowValue(finding);
+      default: return null;
+    }
+  };
+  return [...findings].sort((a, b) => {
+    if (viewState.sortField === 'PRIORITY') {
+      return ((severityRank[b.severity] || 0) - (severityRank[a.severity] || 0))
+        || (Number(b.cvssScore || 0) - Number(a.cvssScore || 0))
+        || ((b.numberOfDevices || 0) - (a.numberOfDevices || 0))
+        || ((b.lastDetectedAt ? new Date(b.lastDetectedAt).getTime() : 0) - (a.lastDetectedAt ? new Date(a.lastDetectedAt).getTime() : 0));
+    }
+    const left = valueFor(a);
+    const right = valueFor(b);
+    if (typeof left === 'number' && typeof right === 'number') return (left - right) * direction;
+    return String(left).localeCompare(String(right)) * direction;
+  });
+}
+
+function activeFilterChips(state, props, softwareOptions) {
+  const chips = [];
+  if (state.searchQuery) chips.push({ key: 'searchQuery', label: `Search: ${state.searchQuery}` });
+  if (state.activeSoftwareFilter !== 'ALL') chips.push({ key: 'activeSoftwareFilter', label: filterLabel('Software', state.activeSoftwareFilter, softwareOptions, 'softwareName') });
+  if (state.activeTemplateFilter !== 'ALL') chips.push({ key: 'activeTemplateFilter', label: filterLabel('Template', state.activeTemplateFilter, props.templates || [], 'name') });
+  if (state.severityFilter !== 'ALL') chips.push({ key: 'severityFilter', label: filterLabel('Severity', state.severityFilter) });
+  if (state.remediationFilter !== 'ALL') chips.push({ key: 'remediationFilter', label: filterLabel('Workflow', workflowLabel(state.remediationFilter)) });
+  if (state.knownExploitedFilter !== 'ALL') chips.push({ key: 'knownExploitedFilter', label: state.knownExploitedFilter === 'YES' ? 'Known exploited' : 'Not known exploited' });
+  if (state.knownRansomwareFilter !== 'ALL') chips.push({ key: 'knownRansomwareFilter', label: state.knownRansomwareFilter === 'YES' ? 'Known ransomware campaign' : 'No known ransomware campaign' });
+  if (state.sortField !== DEFAULT_ACTIVE_VIEW_STATE.sortField || state.sortDirection !== DEFAULT_ACTIVE_VIEW_STATE.sortDirection) {
+    chips.push({ key: 'sortField', label: `Sort: ${SORT_OPTIONS.find((option) => option.value === state.sortField)?.label || state.sortField} ${state.sortDirection}` });
+  }
+  return chips;
+}
+
+function filterLabel(prefix, value, options = [], labelKey = '') {
+  if (value === 'ALL') return `${prefix}: All`;
+  const option = options.find((item) => item.id === value);
+  return `${prefix}: ${option?.label || option?.[labelKey] || value}`;
+}
+
+function workflowLabel(status) {
+  return (status || '').replaceAll('_', ' ');
 }
 
 function uploadScopedSoftwareOptions(softwares, history, selectedCustomerId) {
@@ -1182,7 +1555,7 @@ function uploadScopedSoftwareOptions(softwares, history, selectedCustomerId) {
     .sort((a, b) => (b.latestUploadAt - a.latestUploadAt) || a.softwareName.localeCompare(b.softwareName));
 }
 
-function FindingDetailModal({ finding, remediation, onClose, onRemediation }) {
+function FindingDetailModal({ finding, remediation, remediationEvents = [], onClose, onRemediation }) {
   const [notes, setNotes] = useState(remediation?.notes || '');
   const status = remediation?.workflowStatus || 'OPEN';
   return (
@@ -1193,7 +1566,11 @@ function FindingDetailModal({ finding, remediation, onClose, onRemediation }) {
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <SeverityPill severity={finding.severity} />
               <StatusPill tone="blue">{finding.customer.customerName}</StatusPill>
+              <StatusPill tone="slate">{finding.upload?.software?.softwareName || 'No software'}</StatusPill>
+              <WorkflowPill status={status} />
               {finding.cveId && <StatusPill tone="slate">{finding.cveId}</StatusPill>}
+              {finding.knownExploited && <StatusPill tone="red">Known exploited</StatusPill>}
+              {finding.knownRansomwareCampaign && <StatusPill tone="amber">Ransomware campaign</StatusPill>}
             </div>
             <h3 className="m-0 text-xl font-bold text-white">{finding.issueTitle}</h3>
           </div>
@@ -1201,6 +1578,14 @@ function FindingDetailModal({ finding, remediation, onClose, onRemediation }) {
             <MetricCard label="CVSS" value={formatScore(finding.cvssScore)} tone={finding.severity === 'CRITICAL' ? 'red' : 'blue'} />
             <MetricCard label="Devices" value={finding.numberOfDevices || 0} tone="amber" />
             <MetricCard label="Last Detected" value={finding.lastDetectedAt ? formatDate(finding.lastDetectedAt) : 'N/A'} tone="green" />
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <DetailBlock label="Software" value={finding.upload?.software?.softwareName} />
+            <DetailBlock label="Template" value={finding.upload?.template?.name} />
+            <DetailBlock label="CVE" value={finding.cveId} />
+            <DetailBlock label="OID / Plugin ID" value={finding.oid} />
+            <DetailBlock label="CVSS Vector" value={finding.cvssVector} />
+            <DetailBlock label="Detection Method" value={finding.vulnerabilityDetectionMethod} />
           </div>
           <DetailBlock label="Summary" value={finding.summary} />
           <DetailBlock label="Insight" value={finding.vulnerabilityInsight} />
@@ -1219,10 +1604,27 @@ function FindingDetailModal({ finding, remediation, onClose, onRemediation }) {
               </Button>
             ))}
           </div>
-          <Field label="Operational Notes">
+          <Field label="Operational Notes" optional>
             <TextArea rows={7} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Add workflow notes" className="mt-3" />
           </Field>
           <Button variant="gradient" className="mt-3 w-full" onClick={() => onRemediation(finding, status, notes)}>Save Notes</Button>
+          <div className="mt-5 border-t border-slate-800 pt-4">
+            <div className="mb-3 text-xs font-bold uppercase tracking-wider text-brand-blue">State Journey</div>
+            <div className="space-y-3">
+              {remediationEvents.length === 0 && <div className="rounded-lg border border-slate-800 bg-slate-900 p-3 text-xs text-slate-500">No workflow changes recorded yet.</div>}
+              {remediationEvents.map((event) => (
+                <div key={event.id} className="rounded-lg border border-slate-800 bg-slate-900 p-3">
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    {event.fromStatus && <WorkflowPill status={event.fromStatus} />}
+                    <span className="text-slate-500">to</span>
+                    <WorkflowPill status={event.toStatus} />
+                  </div>
+                  <div className="mt-2 text-xs text-slate-400">{event.changedByUsername} · {formatDate(event.changedAt)}</div>
+                  {event.comment && <div className="mt-2 whitespace-pre-wrap text-sm text-slate-300">{event.comment}</div>}
+                </div>
+              ))}
+            </div>
+          </div>
         </section>
       </div>
     </InteractionPage>
@@ -1247,8 +1649,12 @@ function UploadDetailModal({ run, onClose, onDownloadErrors, onDownloadOriginal,
         <DetailBlock label="Template" value={run.template?.name} />
         <DetailBlock label="Uploaded By" value={run.uploadedBy} />
         <DetailBlock label="Uploaded At" value={formatDate(run.uploadedAt)} />
+        <DetailBlock label="Started At" value={formatDate(run.startedAt)} />
+        <DetailBlock label="Finished At" value={formatDate(run.finishedAt)} />
         <DetailBlock label="Active Snapshot" value={run.activeSnapshot ? 'Yes' : 'No'} />
         <DetailBlock label="Status" value={(run.status || 'PROCESSING').replace('_', ' ')} />
+        <DetailBlock label="Processing Stage" value={processingStageLabel(run.processingStage, run.queueMode)} />
+        <DetailBlock label="Queue Comment" value={run.queueComment} />
       </div>
       <div className="mt-5">
         <DetailBlock label="Error Summary" value={run.errorSummary} />
@@ -1327,10 +1733,10 @@ function SoftwareManager({ canManage, softwares, templates, customers, onRefresh
         <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center">
           <LifecycleTabs value={lifecycleTab} onChange={setLifecycleTab} counts={counts} />
           {lifecycleTab === 'ACTIVE' && <StatusFilter value={statusFilter} onChange={setStatusFilter} counts={counts} />}
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
+          <FilterField label="Search vendors" className="relative flex-1">
+            <Search className="absolute left-3 top-7 h-4 w-4 text-slate-500" />
             <TextInput value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search vendors" className="pl-9" />
-          </div>
+          </FilterField>
         </div>
         <div className="overflow-hidden rounded-xl border border-slate-800">
           <table className="w-full min-w-[860px] text-left text-sm">
@@ -1450,7 +1856,7 @@ function AddVendorDialog({ onClose, onSubmit }) {
             <X className="h-4 w-4" />
           </button>
         </div>
-        <Field label="Vendor Product Name">
+        <Field label="Vendor Product Name" required>
           <TextInput autoFocus value={softwareName} onChange={(e) => setSoftwareName(e.target.value)} placeholder="Example: Nessus, Rapidfire, Kaseya" />
         </Field>
         <div className="mt-5 flex justify-end gap-2">
@@ -1569,10 +1975,10 @@ function CustomerManagement({ isAdmin, customers, softwares, templates, onRefres
         <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center">
           <LifecycleTabs value={lifecycleTab} onChange={setLifecycleTab} counts={counts} />
           {lifecycleTab === 'ACTIVE' && <StatusFilter value={statusFilter} onChange={setStatusFilter} counts={counts} />}
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
+          <FilterField label="Search customers" className="relative flex-1">
+            <Search className="absolute left-3 top-7 h-4 w-4 text-slate-500" />
             <TextInput value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search customers" className="pl-9" />
-          </div>
+          </FilterField>
         </div>
         <div className="overflow-hidden rounded-xl border border-slate-800">
           <table className="w-full min-w-[760px] text-left text-sm">
@@ -1714,7 +2120,7 @@ function AddCustomerDialog({ onClose, onSubmit }) {
             <X className="h-4 w-4" />
           </button>
         </div>
-        <Field label="Customer Name">
+        <Field label="Customer Name" required>
           <TextInput autoFocus value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="Example: Acme Bank" />
         </Field>
         <div className="mt-5 flex justify-end gap-2">
@@ -1887,7 +2293,7 @@ function CustomerDetailModal({ customer, isAdmin, softwares, templates, onClose,
       </div>
       {isAdmin && (
         <div className="mb-5 rounded-xl border border-slate-800 bg-slate-950/70 p-4">
-          <Field label="Customer Name">
+          <Field label="Customer Name" required>
             <div className="flex gap-2">
               <TextInput value={editingName} onChange={(e) => setEditingName(e.target.value)} />
               <Button onClick={async () => {
@@ -1924,10 +2330,10 @@ function CustomerDetailModal({ customer, isAdmin, softwares, templates, onClose,
               <h3 className="m-0 text-sm font-bold">Software List</h3>
               <p className="m-0 mt-1 text-xs text-slate-500">{assignedSoftwareRows.length} of {activeSoftwares.length} software vendors assigned</p>
             </div>
-            <div className="relative md:w-72">
-              <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
+            <FilterField label="Search software" className="relative md:w-72">
+              <Search className="absolute left-3 top-7 h-4 w-4 text-slate-500" />
               <TextInput value={accessQuery} onChange={(e) => setAccessQuery(e.target.value)} placeholder="Search software" className="pl-9" />
-            </div>
+            </FilterField>
           </div>
           <div className="overflow-hidden rounded-xl border border-slate-800">
             <table className="w-full min-w-[760px] text-left text-sm">
@@ -2142,10 +2548,10 @@ function UserManagement({ users, customers, onRefresh, onEditAccess, announce, f
           <h3 className="m-0 text-base font-bold lg:mr-auto">User Directory</h3>
           <LifecycleTabs value={lifecycleTab} onChange={setLifecycleTab} counts={counts} />
           {lifecycleTab === 'ACTIVE' && <StatusFilter value={statusFilter} onChange={setStatusFilter} counts={counts} />}
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
+          <FilterField label="Search users" className="relative flex-1">
+            <Search className="absolute left-3 top-7 h-4 w-4 text-slate-500" />
             <TextInput value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search users, roles, or customers" className="pl-9" />
-          </div>
+          </FilterField>
         </div>
         <div className="overflow-x-auto rounded-xl border border-slate-800">
           <table className="w-full min-w-[980px] text-left text-sm">
@@ -2293,10 +2699,10 @@ function AddUserDialog({ customers, onClose, onSubmit }) {
           </button>
         </div>
         <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Username"><TextInput autoFocus value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} /></Field>
-          <Field label="Temporary Password"><TextInput type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></Field>
-          <Field label="Full Name"><TextInput value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} /></Field>
-          <Field label="Role">
+          <Field label="Username" required><TextInput autoFocus value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} /></Field>
+          <Field label="Temporary Password" required><TextInput type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></Field>
+          <Field label="Full Name" required><TextInput value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} /></Field>
+          <Field label="Role" required>
             <SelectInput value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value, allowedCustomerIds: e.target.value === 'CUSTOMER_OPERATOR' ? form.allowedCustomerIds : [] })}>
               <option value="CUSTOMER_OPERATOR">CUSTOMER_OPERATOR</option>
               <option value="GLOBAL_OPERATOR">GLOBAL_OPERATOR</option>
@@ -2308,6 +2714,8 @@ function AddUserDialog({ customers, onClose, onSubmit }) {
             <div className="md:col-span-2">
               <CheckboxList
                 label="Customer Access"
+                optional
+                hint="Customer operators can be created first and assigned customers later."
                 items={customers}
                 checkedIds={form.allowedCustomerIds}
                 onChange={(allowedCustomerIds) => setForm({ ...form, allowedCustomerIds })}
@@ -2392,6 +2800,8 @@ function UploadModal({ customers, selectedCustomerId, templates, onClose, onDone
   const activeCustomers = customers.filter((customer) => !customer.archived);
   const defaultCustomer = selectedCustomerId !== 'ALL' ? selectedCustomerId : activeCustomers[0]?.id || '';
   const [form, setForm] = useState({ customerId: defaultCustomer, templateId: '', file: null, processing: false });
+  const [busyNotice, setBusyNotice] = useState(null);
+  const [queueComment, setQueueComment] = useState('');
   const [softwareAccessRows, setSoftwareAccessRows] = useState([]);
   const enabledAssignedSoftwareIds = new Set(softwareAccessRows.filter((row) => row.assigned && row.enabled).map((row) => row.software.id));
   const assignedCount = softwareAccessRows.filter((row) => row.assigned).length;
@@ -2404,6 +2814,21 @@ function UploadModal({ customers, selectedCustomerId, templates, onClose, onDone
     && (!template.customer || (!template.customer.archived && template.customer.id === form.customerId))
   ));
   const uploadDirty = form.customerId !== defaultCustomer || Boolean(form.templateId) || Boolean(form.file) || form.processing;
+
+  const submitUpload = async (queueMode = 'REJECT_IF_BUSY') => {
+    setForm((prev) => ({ ...prev, processing: true }));
+    try {
+      await api.ingestFile(form.file, form.customerId, form.templateId, { queueMode, queueComment });
+      await onDone();
+    } catch (err) {
+      setForm((prev) => ({ ...prev, processing: false }));
+      if (err.status === 409 && err.details?.busy) {
+        setBusyNotice(err.details);
+        return;
+      }
+      fail(err);
+    }
+  };
 
   useEffect(() => {
     onDirtyChange?.(uploadDirty);
@@ -2432,23 +2857,48 @@ function UploadModal({ customers, selectedCustomerId, templates, onClose, onDone
         className="space-y-4"
         onSubmit={async (e) => {
           e.preventDefault();
-          setForm((prev) => ({ ...prev, processing: true }));
-          try {
-            await api.ingestFile(form.file, form.customerId, form.templateId);
-            await onDone();
-          } catch (err) {
-            setForm((prev) => ({ ...prev, processing: false }));
-            fail(err);
-          }
+          await submitUpload();
         }}
       >
-        <Field label="Customer">
-          <SelectInput value={form.customerId} onChange={(e) => setForm({ ...form, customerId: e.target.value, templateId: '' })} required>
+        {busyNotice && (
+          <AlertBox tone="amber">
+            <div className="space-y-3">
+              <div>
+                <div className="font-bold text-amber-100">An upload is already processing for this customer.</div>
+                <div className="mt-1 text-xs text-amber-100/80">
+                  Current file: {busyNotice.runningFileName || busyNotice.runningUploadId}. Uploaded by {busyNotice.runningUploadedBy || 'another user'}.
+                </div>
+              </div>
+              <Field label="Queue Comment" optional>
+                <TextArea rows={3} value={queueComment} onChange={(event) => setQueueComment(event.target.value)} placeholder="Reason for queueing or replacing the active snapshot" />
+              </Field>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="tertiary" onClick={() => setBusyNotice(null)}>
+                  Wait
+                </Button>
+                <Button type="button" variant="secondary" disabled={form.processing || !form.file || !form.templateId} onClick={() => submitUpload('QUEUE')}>
+                  Queue Upload
+                </Button>
+                <Button type="button" variant="warn" disabled={form.processing || !form.file || !form.templateId} onClick={() => submitUpload('FORCE_ACTIVATE_WHEN_DONE')}>
+                  Queue And Replace Active
+                </Button>
+              </div>
+            </div>
+          </AlertBox>
+        )}
+        <Field label="Customer" required>
+          <SelectInput value={form.customerId} onChange={(e) => {
+            setBusyNotice(null);
+            setForm({ ...form, customerId: e.target.value, templateId: '' });
+          }} required>
             {activeCustomers.map((customer) => <option key={customer.id} value={customer.id}>{customer.customerName}</option>)}
           </SelectInput>
         </Field>
-        <Field label="Enabled Software Template">
-          <SelectInput value={form.templateId} onChange={(e) => setForm({ ...form, templateId: e.target.value })} required>
+        <Field label="Enabled Software Template" required>
+          <SelectInput value={form.templateId} onChange={(e) => {
+            setBusyNotice(null);
+            setForm({ ...form, templateId: e.target.value });
+          }} required>
             <option value="">Select template</option>
             {availableTemplates.map((template) => <option key={template.id} value={template.id}>{template.name} · {template.software?.softwareName}</option>)}
           </SelectInput>
@@ -2456,8 +2906,11 @@ function UploadModal({ customers, selectedCustomerId, templates, onClose, onDone
           {form.customerId && assignedCount > 0 && enabledAssignedCount === 0 && <div className="mt-2 text-xs text-amber-300">All assigned software is disabled. Enable at least one assignment before uploading.</div>}
           {form.customerId && enabledAssignedCount > 0 && availableTemplates.length === 0 && <div className="mt-2 text-xs text-amber-300">No active templates are available for the assigned software. Create or enable a template first.</div>}
         </Field>
-        <Field label="Scan File">
-          <input type="file" onChange={(e) => setForm({ ...form, file: e.target.files?.[0] || null })} className="w-full rounded-lg border border-dashed border-slate-700 bg-slate-950 p-4 text-sm text-slate-300" required />
+        <Field label="Scan File" required>
+          <input type="file" onChange={(e) => {
+            setBusyNotice(null);
+            setForm({ ...form, file: e.target.files?.[0] || null });
+          }} className="w-full rounded-lg border border-dashed border-slate-700 bg-slate-950 p-4 text-sm text-slate-300" required />
         </Field>
         <Button type="submit" variant="gradient" disabled={form.processing || !form.file || !form.templateId} className="w-full">
           {form.processing ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />} Run Ingestion
@@ -2486,24 +2939,24 @@ function FindingModal({ finding, customers, selectedCustomerId, onClose, onDone,
         }}
       >
         {!isEdit && (
-          <Field label="Customer">
+          <Field label="Customer" required>
             <SelectInput value={form.customerId} onChange={(e) => setForm({ ...form, customerId: e.target.value })} required>
               {customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.customerName}</option>)}
             </SelectInput>
           </Field>
         )}
-        <Field label="Severity">
+        <Field label="Severity" required defaultHint="MEDIUM">
           <SelectInput value={form.severity || 'MEDIUM'} onChange={(e) => setForm({ ...form, severity: e.target.value })}>
             {SEVERITIES.map((severity) => <option key={severity} value={severity}>{severity}</option>)}
           </SelectInput>
         </Field>
-        <Field label="Issue Title"><TextInput value={form.issueTitle || ''} onChange={(e) => setForm({ ...form, issueTitle: e.target.value })} required /></Field>
-        <Field label="CVE ID"><TextInput value={form.cveId || ''} onChange={(e) => setForm({ ...form, cveId: e.target.value })} /></Field>
-        <Field label="CVSS Score"><TextInput type="number" step="0.1" min="0" max="10" value={form.cvssScore || ''} onChange={(e) => setForm({ ...form, cvssScore: e.target.value })} /></Field>
-        <Field label="Number of Devices"><TextInput type="number" min="0" value={form.numberOfDevices || 0} onChange={(e) => setForm({ ...form, numberOfDevices: Number(e.target.value) })} /></Field>
-        <Field label="Affected Devices"><TextInput value={form.affectedDevices || ''} onChange={(e) => setForm({ ...form, affectedDevices: e.target.value })} /></Field>
-        <div className="md:col-span-2"><Field label="Summary"><TextArea rows={3} value={form.summary || ''} onChange={(e) => setForm({ ...form, summary: e.target.value })} /></Field></div>
-        <div className="md:col-span-2"><Field label="Solution"><TextArea rows={3} value={form.solution || ''} onChange={(e) => setForm({ ...form, solution: e.target.value })} /></Field></div>
+        <Field label="Issue Title" required><TextInput value={form.issueTitle || ''} onChange={(e) => setForm({ ...form, issueTitle: e.target.value })} required /></Field>
+        <Field label="CVE ID" optional><TextInput value={form.cveId || ''} onChange={(e) => setForm({ ...form, cveId: e.target.value })} /></Field>
+        <Field label="CVSS Score" optional><TextInput type="number" step="0.1" min="0" max="10" value={form.cvssScore || ''} onChange={(e) => setForm({ ...form, cvssScore: e.target.value })} /></Field>
+        <Field label="Number of Devices" optional defaultHint="0"><TextInput type="number" min="0" value={form.numberOfDevices || 0} onChange={(e) => setForm({ ...form, numberOfDevices: Number(e.target.value) })} /></Field>
+        <Field label="Affected Devices" optional><TextInput value={form.affectedDevices || ''} onChange={(e) => setForm({ ...form, affectedDevices: e.target.value })} /></Field>
+        <div className="md:col-span-2"><Field label="Summary" optional><TextArea rows={3} value={form.summary || ''} onChange={(e) => setForm({ ...form, summary: e.target.value })} /></Field></div>
+        <div className="md:col-span-2"><Field label="Solution" optional><TextArea rows={3} value={form.solution || ''} onChange={(e) => setForm({ ...form, solution: e.target.value })} /></Field></div>
         <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={Boolean(form.knownExploited)} onChange={(e) => setForm({ ...form, knownExploited: e.target.checked })} /> Known exploited</label>
         <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={Boolean(form.knownRansomwareCampaign)} onChange={(e) => setForm({ ...form, knownRansomwareCampaign: e.target.checked })} /> Ransomware campaign</label>
         <div className="md:col-span-2"><Button type="submit" variant="gradient" className="w-full">Save Finding</Button></div>
@@ -3038,7 +3491,7 @@ function TemplateBasicsStep({
               {activeSoftwares.map((software) => <option key={software.id} value={software.id}>{software.softwareName}</option>)}
             </SelectInput>
           </Field>
-          <Field label="Scope">
+          <Field label="Scope" defaultHint="Global standard">
             <SelectInput value={form.customerId} onChange={(e) => setForm({ ...form, customerId: e.target.value, softwareId: e.target.value ? '' : form.softwareId })} disabled={Boolean(form.id)}>
               <option value="">Global standard</option>
               {activeCustomers.map((customer) => <option key={customer.id} value={customer.id}>{customer.customerName}</option>)}
@@ -3047,7 +3500,7 @@ function TemplateBasicsStep({
           <Field label="Template Name" required error={shownDefinitionErrors.name}>
             <TextInput value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={shownDefinitionErrors.name ? 'border-red-500' : ''} />
           </Field>
-          <Field label="File Format">
+          <Field label="File Format" required defaultHint="CSV">
             <SelectInput value={form.fileFormat} onChange={async (e) => {
               const fileFormat = e.target.value;
               const preview = form.sampleFile ? await readDelimitedPreview(form.sampleFile, fileFormat, form.hasHeaderRow) : { columns: [], firstDataRow: [], parseNote: '' };
@@ -3057,18 +3510,20 @@ function TemplateBasicsStep({
           </Field>
         </div>
         <div className="mt-4 grid gap-4 md:grid-cols-[minmax(0,1fr)_220px] md:items-end">
-          <Field label="Description">
+          <Field label="Description" optional>
             <TextInput value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Optional operator note" />
           </Field>
-          <label className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-300">
-            <input type="checkbox" checked={form.hasHeaderRow} onChange={async (e) => {
-              const hasHeaderRow = e.target.checked;
-              const preview = form.sampleFile ? await readDelimitedPreview(form.sampleFile, form.fileFormat, hasHeaderRow) : { columns: [], firstDataRow: [], parseNote: '' };
-              setSamplePreview(preview);
-              setForm({ ...form, hasHeaderRow, mappings: preview.columns.length ? buildDraftMappings(preview.columns, form.mappings, targetFields) : form.mappings });
-            }} />
-            First row has headers
-          </label>
+          <Field label="Header Row" defaultHint="On">
+            <label className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-300">
+              <input type="checkbox" checked={form.hasHeaderRow} onChange={async (e) => {
+                const hasHeaderRow = e.target.checked;
+                const preview = form.sampleFile ? await readDelimitedPreview(form.sampleFile, form.fileFormat, hasHeaderRow) : { columns: [], firstDataRow: [], parseNote: '' };
+                setSamplePreview(preview);
+                setForm({ ...form, hasHeaderRow, mappings: preview.columns.length ? buildDraftMappings(preview.columns, form.mappings, targetFields) : form.mappings });
+              }} />
+              First row has headers
+            </label>
+          </Field>
         </div>
       </div>
       <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4">
@@ -3243,7 +3698,7 @@ function SelfServiceMappingGrid({ mappings, setMappings, hasHeaderRow, samplePre
         </div>
         {unboundDestinations.length > 0 && (
           <div className="mt-4 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
-            <Field label="Set destination without a source">
+            <Field label="Set destination without a source" optional>
               <SelectInput defaultValue="" onChange={(event) => {
                 const field = targetFields.find((item) => item.value === event.target.value);
                 if (field) addDestinationRule(field);
@@ -3348,9 +3803,11 @@ function SelfServiceMappingGrid({ mappings, setMappings, hasHeaderRow, samplePre
                         <div className="rounded-lg border border-slate-800 bg-slate-900 p-3">
                           <div className="mb-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">Convert and handle failures</div>
                           <div className="grid gap-2">
-                            <SelectInput value={mapping.conversionType || 'NONE'} onChange={(e) => update(index, { conversionType: e.target.value, conversionAutoSelected: false })}>
-                              {CONVERSION_TYPES.map((type) => <option key={type}>{type}</option>)}
-                            </SelectInput>
+                            <Field label="Conversion" defaultHint="NONE">
+                              <SelectInput value={mapping.conversionType || 'NONE'} onChange={(e) => update(index, { conversionType: e.target.value, conversionAutoSelected: false })}>
+                                {CONVERSION_TYPES.map((type) => <option key={type}>{type}</option>)}
+                              </SelectInput>
+                            </Field>
                             {mapping.conversionType && mapping.conversionType !== 'NONE' ? (
                               <ConversionFailureControls mapping={mapping} update={(patch) => update(index, patch)} />
                             ) : (
@@ -3516,7 +3973,7 @@ function TemplateSaveReviewDialog({
               />
               <span>I understand the unmapped uploaded file columns listed above will be ignored for this template.</span>
             </label>
-            <Field label="Reason for ignoring source columns (optional)">
+            <Field label="Reason for ignoring source columns" optional>
               <TextArea
                 rows={3}
                 value={review.ignoreSourceComment}
@@ -3642,12 +4099,14 @@ function ConversionFailureControls({ mapping, update }) {
       <label className="flex items-center gap-2 text-xs text-slate-300"><input type="radio" name={groupName} checked={mode === 'FAIL_ROW'} onChange={() => setMode('FAIL_ROW', { conversionErrorValue: '' })} /> Reject row</label>
       <label className={`flex items-center gap-2 text-xs ${disableNullFallback ? 'text-slate-600' : 'text-slate-300'}`}><input type="radio" name={groupName} checked={mode === 'SET_NULL'} disabled={disableNullFallback} onChange={() => setMode('SET_NULL', { conversionErrorValue: '' })} /> Set blank/null</label>
       <label className="flex items-center gap-2 text-xs text-slate-300"><input type="radio" name={groupName} checked={mode === 'SET_CUSTOM'} onChange={() => setMode('SET_CUSTOM')} /> Use fallback</label>
-      <TextInput
-        value={mode === 'SET_CUSTOM' ? mapping.conversionErrorValue || '' : ''}
-        onChange={(e) => setMode(e.target.value ? 'SET_CUSTOM' : 'FAIL_ROW', { conversionErrorValue: e.target.value })}
-        placeholder="Fallback value"
-        disabled={mode !== 'SET_CUSTOM'}
-      />
+      <Field label="Fallback Value" optional>
+        <TextInput
+          value={mode === 'SET_CUSTOM' ? mapping.conversionErrorValue || '' : ''}
+          onChange={(e) => setMode(e.target.value ? 'SET_CUSTOM' : 'FAIL_ROW', { conversionErrorValue: e.target.value })}
+          placeholder="Fallback value"
+          disabled={mode !== 'SET_CUSTOM'}
+        />
+      </Field>
       <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
         {disableNullFallback && mode === 'SET_NULL' ? 'Default handling is active; choose reject row or fallback for conversion failures.' : failureModeLabel(mode)}
       </div>
@@ -3676,14 +4135,18 @@ function EmptySourceControls({ mapping, update }) {
         <label className="flex items-center gap-2 text-xs text-slate-300"><input type="radio" name={groupName} checked={policy.mode === 'LEAVE_EMPTY'} onChange={() => setPolicy('LEAVE_EMPTY')} /> Leave destination empty</label>
         <label className="flex items-center gap-2 text-xs text-slate-300"><input type="radio" name={groupName} checked={policy.mode === 'SET_NULL'} onChange={() => setPolicy('SET_NULL')} /> Set destination NULL</label>
         <label className="flex items-center gap-2 text-xs text-slate-300"><input type="radio" name={groupName} checked={policy.mode === 'USE_DEFAULT'} onChange={() => setPolicy('USE_DEFAULT')} /> Use default value</label>
-        <TextInput
-          value={policy.mode === 'USE_DEFAULT' ? policy.defaultValue || '' : ''}
-          onChange={(event) => setPolicy('USE_DEFAULT', { defaultValue: event.target.value })}
-          placeholder="Default value"
-          disabled={policy.mode !== 'USE_DEFAULT'}
-        />
+        <Field label="Default Value" optional>
+          <TextInput
+            value={policy.mode === 'USE_DEFAULT' ? policy.defaultValue || '' : ''}
+            onChange={(event) => setPolicy('USE_DEFAULT', { defaultValue: event.target.value })}
+            placeholder="Default value"
+            disabled={policy.mode !== 'USE_DEFAULT'}
+          />
+        </Field>
         <label className="flex items-center gap-2 text-xs text-slate-300"><input type="radio" name={groupName} checked={policy.mode === 'FAIL_ROW'} onChange={() => setPolicy('FAIL_ROW')} /> Reject row</label>
-        <TextInput value={mapping.forceValue || ''} onChange={(e) => update({ forceValue: e.target.value })} placeholder="Always use this value" />
+        <Field label="Always Use Value" optional>
+          <TextInput value={mapping.forceValue || ''} onChange={(e) => update({ forceValue: e.target.value })} placeholder="Always use this value" />
+        </Field>
       </div>
     </div>
   );
@@ -3801,10 +4264,10 @@ function UserAccessModal({ user, customers, onClose, onDone, fail, onDirtyChange
               <h3 className="m-0 text-sm font-bold">Customer List</h3>
               <p className="m-0 mt-1 text-xs text-slate-500">{checkedIds.length} of {customers.length} customers assigned</p>
             </div>
-            <div className="relative md:w-72">
-              <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
+            <FilterField label="Search customers" className="relative md:w-72">
+              <Search className="absolute left-3 top-7 h-4 w-4 text-slate-500" />
               <TextInput value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search customers" className="pl-9" />
-            </div>
+            </FilterField>
           </div>
           <div className="overflow-hidden rounded-xl border border-slate-800">
             <table className="w-full text-left text-sm">
@@ -3896,9 +4359,9 @@ function CustomerAccessPreview({ user }) {
   );
 }
 
-function CheckboxList({ label, items, checkedIds, onChange }) {
+function CheckboxList({ label, items, checkedIds, onChange, optional = false, hint = '' }) {
   return (
-    <Field label={label}>
+    <Field label={label} optional={optional} hint={hint}>
       <div className="max-h-48 space-y-2 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-3">
         {items.map((item) => {
           const checked = checkedIds.includes(item.id);
@@ -3995,13 +4458,29 @@ function SeverityPill({ severity }) {
 }
 
 function WorkflowPill({ status }) {
-  const tone = status === 'RESOLVED' ? 'green' : status === 'FALSE_POSITIVE' ? 'purple' : status === 'IN_PROGRESS' ? 'amber' : 'slate';
-  return <StatusPill tone={tone}>{status.replace('_', ' ')}</StatusPill>;
+  const tone = status === 'RESOLVED' ? 'green' : status === 'FALSE_POSITIVE' ? 'purple' : status === 'ACCEPTED_RISK' ? 'blue' : status === 'IN_PROGRESS' ? 'amber' : 'slate';
+  return <StatusPill tone={tone}>{workflowLabel(status)}</StatusPill>;
 }
 
 function UploadStatusPill({ status }) {
   const tone = status === 'SUCCESS' ? 'green' : status === 'PARTIAL_FAILURE' ? 'amber' : status === 'FAILED' ? 'red' : 'blue';
   return <StatusPill tone={tone}>{(status || 'PROCESSING').replace('_', ' ')}</StatusPill>;
+}
+
+function ProcessingStagePill({ stage, queueMode }) {
+  const tone = stage === 'FAILED'
+    ? 'red'
+    : stage === 'COMPLETED'
+      ? 'green'
+      : stage === 'QUEUED'
+        ? 'amber'
+        : 'blue';
+  return <StatusPill tone={tone}>{processingStageLabel(stage, queueMode)}</StatusPill>;
+}
+
+function processingStageLabel(stage, queueMode) {
+  if (stage === 'QUEUED' && queueMode === 'FORCE_ACTIVATE_WHEN_DONE') return 'Queued replace';
+  return (stage || 'FILE_STORED').replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 function findingHash(finding) {

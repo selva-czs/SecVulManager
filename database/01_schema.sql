@@ -90,13 +90,23 @@ CREATE TABLE IF NOT EXISTS upload_details (
     failed_records integer NOT NULL DEFAULT 0,
     successful_records integer NOT NULL DEFAULT 0,
     warning_records integer NOT NULL DEFAULT 0,
+    processed_records integer NOT NULL DEFAULT 0,
+    processing_stage varchar(60) NOT NULL DEFAULT 'FILE_STORED',
+    queue_mode varchar(60) NOT NULL DEFAULT 'REJECT_IF_BUSY',
+    queue_comment text,
+    queued_at timestamptz,
+    started_at timestamptz,
+    finished_at timestamptz,
+    replace_active_when_done boolean NOT NULL DEFAULT false,
     error_summary text,
     error_log_path text,
     sample_file_path text,
     uploaded_file_path text,
     processing_log_path text,
     is_active_snapshot boolean NOT NULL DEFAULT false,
-    CONSTRAINT upload_details_status_chk CHECK (status IN ('PROCESSING', 'SUCCESS', 'PARTIAL_FAILURE', 'FAILED'))
+    CONSTRAINT upload_details_status_chk CHECK (status IN ('PROCESSING', 'SUCCESS', 'PARTIAL_FAILURE', 'FAILED')),
+    CONSTRAINT upload_details_processing_stage_chk CHECK (processing_stage IN ('FILE_STORED', 'QUEUED', 'VALIDATING_TEMPLATE', 'READING_FILE', 'VALIDATING_HEADERS', 'PROCESSING_ROWS', 'WRITING_FAILED_ROWS', 'SAVING_FINDINGS', 'ACTIVATING_SNAPSHOT', 'COMPLETED', 'FAILED')),
+    CONSTRAINT upload_details_queue_mode_chk CHECK (queue_mode IN ('REJECT_IF_BUSY', 'QUEUE', 'FORCE_ACTIVATE_WHEN_DONE'))
 );
 
 CREATE TABLE IF NOT EXISTS vulnerability_finding (
@@ -106,7 +116,7 @@ CREATE TABLE IF NOT EXISTS vulnerability_finding (
     severity varchar(20) NOT NULL DEFAULT 'MEDIUM',
     cvss_score numeric(3, 1),
     cvss_vector varchar(100),
-    cve_id varchar(50),
+    cve_id text,
     oid text,
     issue_title text NOT NULL,
     summary text,
@@ -133,7 +143,34 @@ CREATE TABLE IF NOT EXISTS vulnerability_remediation_status (
     notes varchar(4000),
     updated_by varchar(100) NOT NULL,
     last_updated timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT vulnerability_remediation_status_uk UNIQUE (customer_id, logical_finding_hash)
+    CONSTRAINT vulnerability_remediation_status_uk UNIQUE (customer_id, logical_finding_hash),
+    CONSTRAINT vulnerability_remediation_status_workflow_chk CHECK (workflow_status IN ('OPEN', 'IN_PROGRESS', 'FALSE_POSITIVE', 'RESOLVED', 'ACCEPTED_RISK'))
+);
+
+CREATE TABLE IF NOT EXISTS vulnerability_remediation_event (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id uuid NOT NULL REFERENCES customer(id) ON DELETE CASCADE,
+    logical_finding_hash varchar(64) NOT NULL,
+    from_status varchar(50),
+    to_status varchar(50) NOT NULL,
+    comment varchar(4000),
+    changed_by_user_id uuid REFERENCES app_user(id) ON DELETE SET NULL,
+    changed_by_username varchar(100) NOT NULL,
+    changed_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT vulnerability_remediation_event_to_status_chk CHECK (to_status IN ('OPEN', 'IN_PROGRESS', 'FALSE_POSITIVE', 'RESOLVED', 'ACCEPTED_RISK'))
+);
+
+CREATE TABLE IF NOT EXISTS user_saved_view (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+    name varchar(120) NOT NULL,
+    view_type varchar(60) NOT NULL,
+    is_default boolean NOT NULL DEFAULT false,
+    filters_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    sort_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT user_saved_view_name_uk UNIQUE (user_id, view_type, name)
 );
 
 CREATE INDEX IF NOT EXISTS idx_customer_enabled_archived ON customer (is_archived, is_enabled);
@@ -144,7 +181,11 @@ CREATE INDEX IF NOT EXISTS idx_customer_template_active ON customer_template (is
 CREATE INDEX IF NOT EXISTS idx_customer_software_access_customer ON customer_software_access (customer_id);
 CREATE INDEX IF NOT EXISTS idx_upload_details_customer_uploaded_at ON upload_details (customer_id, uploaded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_upload_details_customer_software_active ON upload_details (customer_id, software_id, is_active_snapshot);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_upload_details_customer_running ON upload_details (customer_id) WHERE status = 'PROCESSING' AND processing_stage <> 'QUEUED';
+CREATE UNIQUE INDEX IF NOT EXISTS ux_upload_active_customer_software ON upload_details (customer_id, software_id) WHERE is_active_snapshot = true AND software_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_upload_details_software_uploaded_at ON upload_details (software_id, uploaded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_vulnerability_remediation_event_lookup ON vulnerability_remediation_event (customer_id, logical_finding_hash, changed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_saved_view_user_type ON user_saved_view (user_id, view_type);
 CREATE INDEX IF NOT EXISTS idx_vulnerability_finding_customer ON vulnerability_finding (customer_id);
 CREATE INDEX IF NOT EXISTS idx_vulnerability_finding_upload ON vulnerability_finding (upload_id);
 CREATE INDEX IF NOT EXISTS idx_vulnerability_finding_severity ON vulnerability_finding (severity);
